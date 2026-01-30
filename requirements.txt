@@ -1,0 +1,52 @@
+# rs_analytics - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# ============================================
+# Core Dependencies
+# ============================================
+
+# Environment variable management
+python-dotenv>=1.0.0
+
+# Google Analytics Data API
+google-analytics-data>=0.18.0
+
+# Local data warehouse
+duckdb>=0.9.0
+
+# Data manipulation
+pandas>=2.0.0
+
+# Web dashboard
+streamlit>=1.30.0
+
+# ============================================
+# Optional Dependencies
+# ============================================
+
+# BigQuery support (uncomment if using BQ mirror)
+# google-cloud-bigquery>=3.0.0
+
+# Enhanced logging (optional)
+# python-json-logger>=2.0.0
+
+# ============================================
+# Development Dependencies
+# ============================================
+
+# Testing
+# pytest>=7.0.0
+# pytest-cov>=4.0.0
+
+# Code quality
+# black>=23.0.0
+# isort>=5.0.0
+# flake8>=6.0.0
+# mypy>=1.0.0
+
+# ============================================
+# Notes
+# ============================================
+# - All Google Cloud authentication uses GOOGLE_APPLICATION_CREDENTIALS
+# - OAuth is NOT used - only service account authentication
+# - BigQuery dependencies are optional - enable only if using BQ mirror

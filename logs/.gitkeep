@@ -1,0 +1,10 @@
+# This file ensures the logs/ directory exists in git
+# while keeping actual log files out (via .gitignore)
+#
+# Log files created here:
+# - rs_analytics.log (main application log)
+# - etl_YYYYMMDD.log (daily ETL logs)
+#
+# Logs are rotated daily and kept for 30 days.
+# This directory is ignored by git to prevent committing
+# potentially sensitive log data.

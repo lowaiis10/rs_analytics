@@ -1,0 +1,8 @@
+# This file ensures the data/ directory exists in git
+# while keeping actual data files out (via .gitignore)
+#
+# The DuckDB database file will be created here:
+# - warehouse.duckdb
+#
+# This directory is ignored by git to prevent committing
+# potentially large or sensitive data files.
