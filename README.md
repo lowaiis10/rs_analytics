@@ -1,14 +1,16 @@
 # rs_analytics
 
-Analytics pipeline for extracting Google Analytics 4 (GA4) data into a local DuckDB warehouse with a Streamlit dashboard for visualization.
+**Unified Analytics Pipeline** for extracting data from Google Analytics 4 (GA4), Google Search Console (GSC), and Google Ads into a local DuckDB warehouse with a Streamlit dashboard for visualization.
 
 ## Features
 
-- **GA4 Data Extraction**: Pull analytics data using the Google Analytics Data API
-- **Local Data Warehouse**: Store data in DuckDB for fast local queries
-- **Streamlit Dashboard**: Interactive visualization of analytics data
-- **Secure Credentials**: Service account authentication with no secrets in code
-- **Extensible**: Ready for BigQuery mirror, Google Ads, Meta Ads integration
+- **GA4 Data Extraction**: Pull website analytics using the Google Analytics Data API
+- **Google Search Console (SEO)**: Comprehensive organic search data and keyword performance
+- **Google Ads (PPC)**: Campaign, ad group, keyword, and conversion data from Google Ads
+- **Local Data Warehouse**: Store 165,000+ rows in DuckDB for fast local queries
+- **Streamlit Dashboard**: Interactive 4-tab visualization (GA4, SEO, PPC, Settings)
+- **Secure Credentials**: Service account and OAuth authentication with no secrets in code
+- **Lifetime Data**: Pull complete historical data from all sources
 
 ## Quick Start
 
@@ -20,7 +22,10 @@ pip install -r requirements.txt
 
 ### 2. Set Up Credentials
 
-See the [Credentials & Security](#credentials--security) section below for detailed instructions.
+See the detailed sections below for each data source:
+- [GA4 Credentials](#ga4-google-analytics-4)
+- [Search Console Credentials](#google-search-console-seo)
+- [Google Ads Credentials](#google-ads-ppc)
 
 ### 3. Configure Environment
 
@@ -32,210 +37,175 @@ cp .env.example .env
 # Use absolute paths for all file references
 ```
 
-### 4. Test Your Setup
+### 4. Test Your Connections
 
 ```bash
-# Verify credentials are working
+# Test GA4
 python scripts/test_ga4_connection.py
+
+# Test Search Console
+python scripts/test_gsc_connection.py
+
+# Test Google Ads
+python scripts/test_gads_connection.py
 ```
 
-### 5. Run the ETL Pipeline
+### 5. Run the ETL Pipelines
 
 ```bash
-# Extract GA4 data and load into DuckDB
-python scripts/run_etl.py
+# GA4 - Comprehensive extraction (all metrics, lifetime data)
+python scripts/run_etl_comprehensive.py --lifetime
+
+# Search Console - Full SEO data extraction
+python scripts/run_etl_gsc.py --lifetime
+
+# Google Ads - Complete advertising data
+python scripts/run_etl_gads.py --lifetime
 ```
 
 ### 6. Launch the Dashboard
 
 ```bash
-streamlit run app/main.py
+streamlit run app/main.py --server.port 3000
+```
+
+Open **http://localhost:3000** to view your analytics dashboard with 4 tabs:
+- 📊 **GA4 Analytics** - Website traffic and user behavior
+- 🔍 **Search Console (SEO)** - Organic search performance
+- 💰 **Google Ads (PPC)** - Paid advertising metrics
+- ⚙️ **Settings** - Configuration and connection status
+
+---
+
+## Data Sources
+
+### GA4 (Google Analytics 4)
+
+**Authentication:** Service Account  
+**Tables Created:** 6  
+**Data Coverage:** Traffic, pages, geography, technology, events
+
+#### Setup Steps
+
+1. **Create Service Account** in [Google Cloud Console](https://console.cloud.google.com/)
+2. **Download JSON key** and save to `secrets/ga4_service_account.json`
+3. **Enable** the [Google Analytics Data API](https://console.cloud.google.com/apis/library/analyticsdata.googleapis.com)
+4. **Add service account** to GA4 property (Admin → Property Access Management)
+5. **Configure** `.env`:
+   ```env
+   GA4_PROPERTY_ID=123456789
+   GOOGLE_APPLICATION_CREDENTIALS=C:/path/to/secrets/ga4_service_account.json
+   ```
+
+#### ETL Commands
+
+```bash
+# Standard daily ETL (last 30 days)
+python scripts/run_etl.py
+
+# Comprehensive ETL (all metrics, lifetime)
+python scripts/run_etl_comprehensive.py --lifetime
+
+# Custom date range
+python scripts/run_etl_comprehensive.py --start-date 2024-01-01 --end-date 2024-12-31
 ```
 
 ---
 
-## Credentials & Security
+### Google Search Console (SEO)
 
-This section explains how to securely configure authentication for GA4 and other integrations.
+**Authentication:** Service Account  
+**Tables Created:** 10  
+**Data Coverage:** Queries, pages, countries, devices, daily totals
 
-### Overview
+#### Setup Steps
 
-- **Authentication Method**: Service Account (not OAuth)
-- **Credential Storage**: JSON key file in `secrets/` directory
-- **Environment Variable**: `GOOGLE_APPLICATION_CREDENTIALS`
-- **What NOT to use**: OAuth, refresh tokens, client secrets
+1. **Create Service Account** (can reuse GA4 service account or create new)
+2. **Download JSON key** and save to `secrets/gsc_service_account.json`
+3. **Enable** the [Search Console API](https://console.cloud.google.com/apis/library/searchconsole.googleapis.com)
+4. **Add service account** to Search Console (Settings → Users and permissions)
+5. **Configure** `.env`:
+   ```env
+   # For domain property (recommended)
+   GSC_SITE_URL=sc-domain:yourdomain.com
+   
+   # OR for URL prefix property
+   GSC_SITE_URL=https://www.yourdomain.com/
+   
+   GOOGLE_SEARCH_CONSOLE_CREDENTIALS=C:/path/to/secrets/gsc_service_account.json
+   ```
 
-### Step 1: Create a Google Cloud Service Account
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Select or create a project
-3. Navigate to **IAM & Admin → Service Accounts**
-4. Click **+ Create Service Account**
-5. Enter a name (e.g., `rs-analytics-ga4`)
-6. Click **Create and Continue**
-7. Skip the optional role assignment (GA4 permissions are set separately)
-8. Click **Done**
-
-### Step 2: Generate a JSON Key
-
-1. In the Service Accounts list, find your new service account
-2. Click the three-dot menu → **Manage keys**
-3. Click **Add Key → Create new key**
-4. Select **JSON** format
-5. Click **Create** - the key file will download automatically
-6. **Move the downloaded file to**: `secrets/ga4_service_account.json`
-
-### Step 3: Secure the Credentials File
-
-**Linux/macOS:**
-```bash
-# Restrict file permissions (owner read-only)
-chmod 600 secrets/ga4_service_account.json
-```
-
-**Windows:**
-Right-click the file → Properties → Security → Edit → Remove all users except your account.
-
-### Step 4: Enable the Google Analytics Data API
-
-1. Go to [Google Analytics Data API](https://console.cloud.google.com/apis/library/analyticsdata.googleapis.com)
-2. Select your project
-3. Click **Enable**
-4. Wait 2-5 minutes for the change to propagate
-
-### Step 5: Grant GA4 Property Access
-
-1. Open [Google Analytics](https://analytics.google.com/)
-2. Go to **Admin** (gear icon)
-3. In the Property column, click **Property Access Management**
-4. Click **+** to add a new user
-5. Enter the service account email (found in your JSON file, looks like `name@project.iam.gserviceaccount.com`)
-6. Select role: **Viewer** (minimum required)
-7. Uncheck "Notify new users by email" (service accounts can't receive email)
-8. Click **Add**
-
-### Step 6: Configure Environment Variables
-
-Edit your `.env` file with the correct values:
-
-```env
-# GA4 Property ID (found in GA4 → Admin → Property Settings)
-GA4_PROPERTY_ID=123456789
-
-# ABSOLUTE path to your service account JSON
-# Windows example:
-GOOGLE_APPLICATION_CREDENTIALS=C:/Users/username/projects/rs_analytics/secrets/ga4_service_account.json
-
-# Linux/macOS example:
-# GOOGLE_APPLICATION_CREDENTIALS=/home/username/rs_analytics/secrets/ga4_service_account.json
-```
-
-**Important**: Use forward slashes (`/`) even on Windows, or escape backslashes (`\\`).
-
-### Step 7: Test Your Credentials
+#### ETL Commands
 
 ```bash
-python scripts/test_ga4_connection.py
-```
+# Full lifetime extraction
+python scripts/run_etl_gsc.py --lifetime
 
-Expected output:
-```
-============================================================
-  rs_analytics - GA4 Connection Test
-============================================================
+# Last 90 days
+python scripts/run_etl_gsc.py --lookback-days 90
 
-Step 1: Loading configuration...
-  [OK] Configuration loaded successfully
-  [i] GA4 Property ID: 123456789
-  [i] Credentials Path: C:/Users/.../secrets/ga4_service_account.json
-
-Step 2: Verifying credentials file...
-  [OK] Credentials file exists
-  [OK] Credentials file has appropriate permissions
-
-Step 3: Verifying service account JSON structure...
-  [OK] Service account JSON structure is valid
-  [i] Service Account Type: service_account
-  [i] GCP Project: your-project-id
-  [i] Service Account Email: name@project.iam.gserviceaccount.com
-
-Step 4: Testing GA4 API connection...
-  [i] Creating GA4 client (using GOOGLE_APPLICATION_CREDENTIALS)...
-  [OK] GA4 client created successfully
-
-Step 5: Running test query...
-  [i] Querying property 123456789 for date: 2024-01-15
-  [OK] GA4 API query executed successfully!
-
-  --- Query Results ---
-  Sessions: 1234
-  Active Users: 567
-  Page Views: 8901
-
-============================================================
-  All Tests Passed!
-============================================================
+# Custom date range
+python scripts/run_etl_gsc.py --start-date 2024-06-01 --end-date 2024-12-31
 ```
 
 ---
 
-## Common Errors and Fixes
+### Google Ads (PPC)
 
-### Error: "Missing GOOGLE_APPLICATION_CREDENTIALS"
+**Authentication:** OAuth 2.0 (Desktop App)  
+**Tables Created:** 9  
+**Data Coverage:** Campaigns, ad groups, keywords, ads, devices, geographic, hourly, conversions
 
-**Cause**: The environment variable is not set.
+#### Setup Steps
 
-**Fix**:
-1. Ensure `.env` file exists in the project root
-2. Verify `GOOGLE_APPLICATION_CREDENTIALS` is set with an absolute path
-3. Check the path uses forward slashes or escaped backslashes
+1. **Apply for Google Ads API access** at [Google Ads API Center](https://ads.google.com/home/tools/manager-accounts/)
+2. **Create OAuth 2.0 Client** in Google Cloud Console:
+   - Go to APIs & Services → Credentials
+   - Create OAuth 2.0 Client ID → **Desktop app**
+   - Download client ID and client secret
+3. **Create `secrets/google_ads.yaml`**:
+   ```yaml
+   developer_token: YOUR_DEVELOPER_TOKEN
+   client_id: YOUR_OAUTH_CLIENT_ID
+   client_secret: YOUR_OAUTH_CLIENT_SECRET
+   refresh_token: YOUR_REFRESH_TOKEN
+   login_customer_id: YOUR_MANAGER_ACCOUNT_ID
+   use_proto_plus: True
+   ```
+4. **Generate Refresh Token**:
+   ```bash
+   python scripts/generate_gads_refresh_token.py
+   ```
+5. **Configure** `.env`:
+   ```env
+   GOOGLE_ADS_YAML_PATH=C:/path/to/secrets/google_ads.yaml
+   # Use CLIENT account ID (not manager) for metrics
+   GOOGLE_ADS_CUSTOMER_ID=1234567890
+   ```
 
-### Error: "Service account file not found"
+#### Finding Your Customer IDs
 
-**Cause**: The path in `GOOGLE_APPLICATION_CREDENTIALS` doesn't point to an existing file.
+```bash
+# List all accounts under your manager account
+python scripts/list_gads_accounts.py
+```
 
-**Fix**:
-1. Verify the JSON file exists at the specified path
-2. Check for typos in the path
-3. Use an absolute path, not relative
+This will show:
+- **Manager Account ID** (use for `login_customer_id` in YAML)
+- **Client Account IDs** (use for `GOOGLE_ADS_CUSTOMER_ID` in .env)
 
-### Error: "Permission denied (403)"
+#### ETL Commands
 
-**Cause**: Service account doesn't have access to the GA4 property.
+```bash
+# Full lifetime extraction
+python scripts/run_etl_gads.py --lifetime
 
-**Fix**:
-1. Go to GA4 → Admin → Property Access Management
-2. Add the service account email as a user
-3. Grant at least "Viewer" role
-4. Wait 2-5 minutes for permissions to propagate
+# Last 30 days
+python scripts/run_etl_gads.py --lookback-days 30
 
-### Error: "API has not been used in project"
-
-**Cause**: The Google Analytics Data API is not enabled.
-
-**Fix**:
-1. Go to [Google Analytics Data API](https://console.cloud.google.com/apis/library/analyticsdata.googleapis.com)
-2. Select your GCP project
-3. Click "Enable"
-4. Wait 2-5 minutes
-
-### Error: "Property not found"
-
-**Cause**: Invalid GA4 Property ID.
-
-**Fix**:
-1. Go to GA4 → Admin → Property Settings
-2. Find your Property ID (numeric value)
-3. Update `GA4_PROPERTY_ID` in `.env`
-
-### Error: "Invalid JSON in credentials file"
-
-**Cause**: The JSON file is corrupted or incomplete.
-
-**Fix**:
-1. Re-download the service account key from GCP Console
-2. Replace `secrets/ga4_service_account.json` with the new file
-3. Ensure the file wasn't truncated during download
+# Custom date range
+python scripts/run_etl_gads.py --start-date 2024-01-01 --end-date 2024-12-31
+```
 
 ---
 
@@ -243,39 +213,95 @@ Step 5: Running test query...
 
 ```
 rs_analytics/
-├── .env.example          # Template for environment variables (committed)
-├── .env                  # Your local configuration (NOT committed)
-├── .gitignore            # Git ignore rules
-├── README.md             # This file
-├── requirements.txt      # Python dependencies
+├── .env.example              # Template for environment variables
+├── .env                      # Your local configuration (NOT committed)
+├── .gitignore                # Git ignore rules
+├── README.md                 # This file
+├── requirements.txt          # Python dependencies
 │
-├── secrets/              # Credential files (NOT committed)
-│   ├── .gitkeep
-│   └── ga4_service_account.json
+├── secrets/                  # Credential files (NOT committed)
+│   ├── ga4_service_account.json
+│   ├── gsc_service_account.json
+│   └── google_ads.yaml
 │
-├── data/                 # DuckDB database (NOT committed)
-│   └── warehouse.duckdb
+├── data/                     # DuckDB database & documentation
+│   ├── warehouse.duckdb      # Local analytics warehouse
+│   └── DATABASE_DESIGN.md    # Complete schema documentation
 │
-├── logs/                 # Application logs (NOT committed)
+├── logs/                     # Application logs (NOT committed)
 │   └── *.log
 │
-├── etl/                  # ETL modules
+├── etl/                      # ETL configuration modules
 │   ├── __init__.py
-│   └── config.py         # Central configuration loader
+│   ├── config.py             # GA4 configuration
+│   ├── gsc_config.py         # Search Console configuration
+│   ├── gads_config.py        # Google Ads configuration
+│   ├── gsc_extractor.py      # Search Console data extractor
+│   └── gads_extractor.py     # Google Ads data extractor
 │
-├── scripts/              # Runnable scripts
-│   ├── __init__.py
-│   ├── test_ga4_connection.py  # Credential testing
-│   └── run_etl.py        # ETL pipeline runner
+├── scripts/                  # Runnable scripts
+│   ├── run_etl.py            # Standard GA4 ETL
+│   ├── run_etl_comprehensive.py  # Full GA4 extraction
+│   ├── run_etl_gsc.py        # Search Console ETL
+│   ├── run_etl_gads.py       # Google Ads ETL
+│   ├── test_ga4_connection.py
+│   ├── test_gsc_connection.py
+│   ├── test_gads_connection.py
+│   ├── list_gads_accounts.py  # List Google Ads accounts
+│   └── generate_gads_refresh_token.py
 │
-└── app/                  # Streamlit dashboard
+└── app/                      # Streamlit dashboard
     ├── __init__.py
-    └── main.py           # Main dashboard app
+    └── main.py               # Multi-tab dashboard app
 ```
 
 ---
 
-## Running in Production (VPS/Server)
+## Database Overview
+
+**Location:** `data/warehouse.duckdb`  
+**Total Tables:** 25  
+**Total Rows:** 165,000+
+
+| Source | Tables | Rows | Data |
+|--------|--------|------|------|
+| GA4 | 6 | 63,480+ | Traffic, pages, geography, technology, events |
+| Search Console | 10 | 94,270+ | Queries, pages, countries, devices |
+| Google Ads | 9 | 7,395+ | Campaigns, keywords, ads, conversions |
+
+See `data/DATABASE_DESIGN.md` for complete schema documentation.
+
+---
+
+## Common Errors and Fixes
+
+### GA4 Errors
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| "Missing GOOGLE_APPLICATION_CREDENTIALS" | Env var not set | Set absolute path in `.env` |
+| "Service account file not found" | Wrong path | Verify file exists, use absolute path |
+| "Permission denied (403)" | No GA4 access | Add service account to GA4 property |
+| "API has not been used in project" | API not enabled | Enable Analytics Data API in GCP |
+
+### Search Console Errors
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| "Configured site not found" | Wrong URL format | Use `sc-domain:` prefix for domain properties |
+| "Permission denied" | No access | Add service account in Search Console settings |
+
+### Google Ads Errors
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| "unauthorized_client" | Invalid refresh token | Run `generate_gads_refresh_token.py` |
+| "Metrics cannot be requested for manager account" | Using MCA ID | Use client account ID in `.env` |
+| "DEVELOPER_TOKEN_NOT_APPROVED" | Test token | Apply for basic or standard access |
+
+---
+
+## Running in Production
 
 ### Cron Job Setup
 
@@ -283,77 +309,30 @@ rs_analytics/
 # Edit crontab
 crontab -e
 
-# Add daily ETL run at 6 AM
-0 6 * * * cd /path/to/rs_analytics && /path/to/python scripts/run_etl.py >> logs/cron.log 2>&1
+# Daily GA4 update at 6 AM
+0 6 * * * cd /path/to/rs_analytics && python scripts/run_etl.py >> logs/cron.log 2>&1
+
+# Daily GSC update at 6:30 AM
+30 6 * * * cd /path/to/rs_analytics && python scripts/run_etl_gsc.py >> logs/cron.log 2>&1
+
+# Daily Google Ads update at 7 AM
+0 7 * * * cd /path/to/rs_analytics && python scripts/run_etl_gads.py >> logs/cron.log 2>&1
 ```
 
-**Note**: The script loads `.env` automatically, so no environment variable exports are needed in the cron command.
+### Windows Task Scheduler
 
-### Systemd Service (Alternative)
-
-Create `/etc/systemd/system/rs-analytics-etl.service`:
-
-```ini
-[Unit]
-Description=rs_analytics ETL Service
-After=network.target
-
-[Service]
-Type=oneshot
-User=your-username
-WorkingDirectory=/path/to/rs_analytics
-ExecStart=/path/to/python scripts/run_etl.py
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Create `/etc/systemd/system/rs-analytics-etl.timer`:
-
-```ini
-[Unit]
-Description=Run rs_analytics ETL daily
-
-[Timer]
-OnCalendar=*-*-* 06:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
-Enable and start:
-
-```bash
-sudo systemctl enable rs-analytics-etl.timer
-sudo systemctl start rs-analytics-etl.timer
-```
+Create scheduled tasks for each ETL script with appropriate triggers (daily, specific times).
 
 ---
 
 ## Security Best Practices
 
-1. **Never commit secrets**: `.env` and `secrets/` are in `.gitignore`
+1. **Never commit secrets**: `.env`, `secrets/`, and `*.yaml` are in `.gitignore`
 2. **Restrict file permissions**: `chmod 600` on credential files
-3. **Use absolute paths**: Prevents issues with working directory changes
-4. **Fail fast**: Invalid config stops execution immediately with clear errors
-5. **No secrets in logs**: Only paths and status are logged, never credential contents
-6. **Service accounts only**: OAuth refresh tokens are explicitly not used
-
----
-
-## Future Integrations
-
-The configuration system is designed to be extensible:
-
-- **BigQuery**: Set `ENABLE_BQ_MIRROR=1` and configure BQ credentials
-- **Google Ads**: Add `GOOGLE_ADS_*` variables (planned)
-- **Meta/Facebook Ads**: Add `META_*` variables (planned)
-
-Each integration follows the same pattern:
-1. Add environment variables to `.env.example`
-2. Add validation logic to `etl/config.py`
-3. Create extraction module under `etl/`
+3. **Use absolute paths**: Prevents working directory issues
+4. **Fail fast**: Invalid config stops execution with clear errors
+5. **No secrets in logs**: Only paths and status are logged
+6. **Separate credentials**: Use different service accounts per service when possible
 
 ---
 
@@ -361,15 +340,16 @@ Each integration follows the same pattern:
 
 If you encounter issues:
 
-1. **Run the connection test**: `python scripts/test_ga4_connection.py`
-2. **Check logs**: Look in `logs/` directory for detailed error messages
-3. **Verify environment**: Ensure `.env` exists with correct values
-4. **Check permissions**: Service account needs GA4 access
+1. **Run connection tests** for the problematic service
+2. **Check logs** in `logs/` directory
+3. **Verify environment** variables in `.env`
+4. **Check permissions** for service accounts
+5. **Review API quotas** in Google Cloud Console
 
-For Streamlit issues:
-- The app validates configuration at startup
-- Errors are displayed with clear fix instructions
-- Use the "Test GA4 Connection" button in the sidebar
+For Streamlit dashboard issues:
+- Configuration validated at startup
+- Errors displayed with fix instructions
+- Use Settings tab to test connections
 
 ---
 

@@ -27,6 +27,7 @@ secrets/*
 # Data files may contain PII or be too large for git
 data/*
 !data/.gitkeep
+!data/DATABASE_DESIGN.md
 *.duckdb
 *.duckdb.wal
 *.parquet

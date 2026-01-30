@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""
+Google Ads ETL Pipeline for rs_analytics
+
+This script extracts all available data from Google Ads:
+- Campaign performance
+- Ad group metrics  
+- Keyword performance
+- Ad performance
+- Device breakdowns
+- Geographic data
+- Hourly performance
+- Conversion tracking
+- Lifetime data support
+
+Usage:
+    # Pull all lifetime data
+    python scripts/run_etl_gads.py --lifetime
+    
+    # Pull last 30 days (default)
+    python scripts/run_etl_gads.py
+    
+    # Pull specific date range
+    python scripts/run_etl_gads.py --start-date 2024-01-01 --end-date 2025-12-31
+    
+    # Pull last N days
+    python scripts/run_etl_gads.py --lookback-days 90
+
+Created Tables:
+    - gads_daily_summary: Account-level daily totals
+    - gads_campaigns: Campaign performance by date
+    - gads_ad_groups: Ad group performance
+    - gads_keywords: Keyword performance
+    - gads_ads: Individual ad performance
+    - gads_devices: Performance by device
+    - gads_geographic: Geographic performance
+    - gads_hourly: Hourly performance
+    - gads_conversions: Conversion action data
+"""
+
+import argparse
+import logging
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Any
+
+import duckdb
+import pandas as pd
+
+# Add project root to path for imports
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Run Google Ads ETL pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python scripts/run_etl_gads.py                           # Last 30 days
+  python scripts/run_etl_gads.py --lifetime                # All available data
+  python scripts/run_etl_gads.py --lookback-days 90        # Last 90 days
+  python scripts/run_etl_gads.py --start-date 2024-01-01   # From specific date
+        """
+    )
+    
+    parser.add_argument(
+        "--lifetime",
+        action="store_true",
+        help="Extract all available lifetime data"
+    )
+    
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        help="Start date in YYYY-MM-DD format"
+    )
+    
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        help="End date in YYYY-MM-DD format (defaults to yesterday)"
+    )
+    
+    parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=30,
+        help="Number of days to look back (default: 30)"
+    )
+    
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose (DEBUG) logging"
+    )
+    
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate configuration only, don't extract data"
+    )
+    
+    return parser.parse_args()
+
+
+def setup_logging(log_dir: Path, verbose: bool = False) -> logging.Logger:
+    """Set up logging for ETL run."""
+    from logging.handlers import TimedRotatingFileHandler
+    
+    log_level = logging.DEBUG if verbose else logging.INFO
+    
+    # Create logger
+    logger = logging.getLogger("gads_etl")
+    logger.setLevel(log_level)
+    logger.handlers.clear()
+    
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(log_level)
+    console_format = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    console_handler.setFormatter(console_format)
+    logger.addHandler(console_handler)
+    
+    # File handler
+    log_file = log_dir / f"gads_etl_{datetime.now().strftime('%Y%m%d')}.log"
+    file_handler = TimedRotatingFileHandler(
+        log_file,
+        when="midnight",
+        interval=1,
+        backupCount=30,
+        encoding="utf-8"
+    )
+    file_handler.setLevel(log_level)
+    file_format = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s"
+    )
+    file_handler.setFormatter(file_format)
+    logger.addHandler(file_handler)
+    
+    return logger
+
+
+def load_to_duckdb(
+    duckdb_path: str,
+    data: List[Dict[str, Any]],
+    table_name: str,
+    logger: logging.Logger
+) -> bool:
+    """
+    Load extracted data into DuckDB.
+    
+    Args:
+        duckdb_path: Path to DuckDB database
+        data: List of data rows
+        table_name: Name of the table to create/replace
+        logger: Logger instance
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    if not data:
+        logger.warning(f"No data to load for {table_name}")
+        return True
+    
+    try:
+        logger.info(f"Loading {len(data):,} rows to {table_name}")
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(data)
+        
+        # Clean column names
+        df.columns = df.columns.str.replace('[^a-zA-Z0-9_]', '_', regex=True)
+        
+        # Connect and load
+        conn = duckdb.connect(duckdb_path)
+        conn.execute(f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM df")
+        conn.close()
+        
+        logger.info(f"Successfully loaded {len(data):,} rows to {table_name}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to load {table_name}: {e}")
+        return False
+
+
+def main() -> int:
+    """Main ETL pipeline execution."""
+    args = parse_args()
+    
+    # Initial logging
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    
+    print("=" * 60)
+    print("rs_analytics - Google Ads ETL Pipeline")
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 60)
+    
+    # ========================================
+    # Step 1: Load Configuration
+    # ========================================
+    print("\nStep 1: Loading Google Ads configuration...")
+    
+    try:
+        from etl.gads_config import get_gads_config, get_gads_client
+        config = get_gads_config()
+        print(f"  [OK] Configuration loaded")
+        print(f"  [i] Customer ID: {config.customer_id}")
+        print(f"  [i] YAML Path: {config.yaml_path}")
+        print(f"  [i] DuckDB: {config.duckdb_path}")
+    except Exception as e:
+        print(f"  [X] Configuration error: {e}")
+        return 1
+    
+    # Set up logging with config
+    logger = setup_logging(config.log_dir, args.verbose)
+    
+    # ========================================
+    # Step 2: Determine Date Range
+    # ========================================
+    logger.info("=" * 50)
+    logger.info("Step 2: Determining date range")
+    logger.info("=" * 50)
+    
+    # Calculate dates
+    yesterday = datetime.now() - timedelta(days=1)
+    
+    if args.lifetime:
+        # Google Ads can have data going back years - start from 2020
+        start_date = "2020-01-01"
+        end_date = yesterday.strftime('%Y-%m-%d')
+        logger.info("LIFETIME MODE: Extracting all available data from 2020")
+    elif args.start_date:
+        start_date = args.start_date
+        end_date = args.end_date or yesterday.strftime('%Y-%m-%d')
+    else:
+        start_date = (yesterday - timedelta(days=args.lookback_days - 1)).strftime('%Y-%m-%d')
+        end_date = yesterday.strftime('%Y-%m-%d')
+    
+    logger.info(f"Date range: {start_date} to {end_date}")
+    
+    # ========================================
+    # Step 3: Initialize Client
+    # ========================================
+    logger.info("=" * 50)
+    logger.info("Step 3: Initializing Google Ads client")
+    logger.info("=" * 50)
+    
+    try:
+        client = get_gads_client()
+        logger.info("  [OK] Google Ads client initialized")
+    except Exception as e:
+        logger.error(f"  [X] Failed to create Google Ads client: {e}")
+        return 2
+    
+    # ========================================
+    # Step 4: Test Connection
+    # ========================================
+    logger.info("=" * 50)
+    logger.info("Step 4: Testing Google Ads connection")
+    logger.info("=" * 50)
+    
+    try:
+        from etl.gads_extractor import GAdsExtractor
+        
+        extractor = GAdsExtractor(
+            client=client,
+            customer_id=config.customer_id,
+            login_customer_id=config.login_customer_id,
+            logger=logger
+        )
+        
+        success, message = extractor.test_connection()
+        
+        if success:
+            logger.info(f"  [OK] {message}")
+        else:
+            logger.error(f"  [X] {message}")
+            return 2
+            
+    except Exception as e:
+        logger.error(f"  [X] Failed to initialize extractor: {e}")
+        return 2
+    
+    # ========================================
+    # Dry Run Check
+    # ========================================
+    if args.dry_run:
+        logger.info("=" * 50)
+        logger.info("DRY RUN - Configuration validated, no data extracted")
+        logger.info("=" * 50)
+        return 0
+    
+    # ========================================
+    # Step 5: Extract All Data
+    # ========================================
+    logger.info("=" * 50)
+    logger.info("Step 5: Extracting Google Ads data")
+    logger.info("=" * 50)
+    
+    try:
+        all_data = extractor.extract_all_data(
+            start_date=start_date,
+            end_date=end_date
+        )
+    except Exception as e:
+        logger.error(f"Extraction failed: {e}")
+        return 2
+    
+    if not all_data:
+        logger.warning("No data extracted from Google Ads")
+        return 0
+    
+    # ========================================
+    # Step 6: Load to DuckDB
+    # ========================================
+    logger.info("=" * 50)
+    logger.info("Step 6: Loading data to DuckDB")
+    logger.info("=" * 50)
+    
+    duckdb_path = str(config.duckdb_path)
+    total_rows = 0
+    tables_created = []
+    
+    for dataset_name, data in all_data.items():
+        table_name = f"gads_{dataset_name}"
+        
+        if load_to_duckdb(duckdb_path, data, table_name, logger):
+            total_rows += len(data)
+            tables_created.append(table_name)
+        else:
+            logger.warning(f"Failed to load {table_name}")
+    
+    # ========================================
+    # Summary
+    # ========================================
+    logger.info("\n" + "=" * 60)
+    logger.info("GOOGLE ADS ETL PIPELINE COMPLETED SUCCESSFULLY")
+    logger.info("=" * 60)
+    logger.info(f"Date range: {start_date} to {end_date}")
+    logger.info(f"Total rows extracted: {total_rows:,}")
+    logger.info(f"Tables created: {len(tables_created)}")
+    logger.info(f"Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("")
+    logger.info("Created tables:")
+    for table in tables_created:
+        logger.info(f"  - {table}")
+    logger.info("=" * 60)
+    
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

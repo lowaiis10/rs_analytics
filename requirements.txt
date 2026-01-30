@@ -11,6 +11,12 @@ python-dotenv>=1.0.0
 # Google Analytics Data API
 google-analytics-data>=0.18.0
 
+# Google Search Console API
+google-api-python-client>=2.0.0
+
+# Google Ads API
+google-ads>=29.0.0
+
 # Local data warehouse
 duckdb>=0.9.0
 
