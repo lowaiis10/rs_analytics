@@ -156,9 +156,28 @@ class MetaExtractor:
             return {}
     
     def _parse_actions(self, actions: List[Dict], action_type: str) -> int:
-        """Parse actions list to get specific action count."""
+        """
+        Parse actions list to get specific action count.
+        
+        For app_install, checks multiple action types that Meta may use:
+        - mobile_app_install (most common for mobile apps)
+        - omni_app_install (cross-device installs)
+        - app_install (legacy/generic)
+        """
         if not actions:
             return 0
+        
+        # For app installs, check multiple possible action types
+        # Meta returns installs under different names depending on campaign type
+        if action_type == 'app_install':
+            install_types = ['mobile_app_install', 'omni_app_install', 'app_install']
+            for install_type in install_types:
+                for action in actions:
+                    if action.get('action_type') == install_type:
+                        return int(float(action.get('value', 0)))
+            return 0
+        
+        # Standard lookup for other action types
         for action in actions:
             if action.get('action_type') == action_type:
                 return int(float(action.get('value', 0)))
@@ -190,10 +209,13 @@ class MetaExtractor:
             Dictionary with 'since' and 'until' keys
         """
         if lifetime:
-            # Meta API has a 37-month limitation on historical data
-            # Use maximum allowed lookback (approx 37 months = 1125 days)
+            # Meta API limitations:
+            # 1. Maximum historical data: 37 months
+            # 2. IMPORTANT: Very long date ranges (>400 days) may not return 
+            #    action breakdowns like mobile_app_install in the response.
+            #    Use 400 days (~13 months) to ensure action data is included.
             end = datetime.now()
-            start = end - timedelta(days=1100)  # ~36 months to be safe
+            start = end - timedelta(days=400)  # ~13 months for reliable action data
             return {
                 'since': start.strftime('%Y-%m-%d'),
                 'until': end.strftime('%Y-%m-%d')

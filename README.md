@@ -43,32 +43,32 @@ cp .env.example .env
 ### 4. Test Your Connections
 
 ```bash
-# Test GA4
-python scripts/test_ga4_connection.py
+# Test all configured sources at once (recommended)
+python scripts/test_connections_unified.py --all
 
-# Test Search Console
-python scripts/test_gsc_connection.py
-
-# Test Google Ads
-python scripts/test_gads_connection.py
-
-# Test Meta Ads
-python scripts/test_meta_connection.py
+# Or test individual sources
+python scripts/test_connections_unified.py --source ga4
+python scripts/test_connections_unified.py --source gads
+python scripts/test_connections_unified.py --source gsc
+python scripts/test_connections_unified.py --source meta
+python scripts/test_connections_unified.py --source twitter
 ```
 
 ### 5. Run the ETL Pipelines
 
 ```bash
-# GA4 - Comprehensive extraction (all metrics, lifetime data)
+# RECOMMENDED: Use the unified ETL runner
+python scripts/run_etl_unified.py --source all --lookback-days 30
+
+# Or run specific sources
+python scripts/run_etl_unified.py --source ga4 --lookback-days 30
+python scripts/run_etl_unified.py --source gads --lifetime
+python scripts/run_etl_unified.py --source gsc --start-date 2024-01-01
+
+# Legacy scripts still work:
 python scripts/run_etl_comprehensive.py --lifetime
-
-# Search Console - Full SEO data extraction
 python scripts/run_etl_gsc.py --lifetime
-
-# Google Ads - Complete advertising data
 python scripts/run_etl_gads.py --lifetime
-
-# Meta Ads - Complete advertising data (up to 37 months)
 python scripts/run_etl_meta.py --lifetime
 ```
 
@@ -305,29 +305,56 @@ rs_analytics/
 ├── logs/                     # Application logs (NOT committed)
 │   └── *.log
 │
-├── etl/                      # ETL configuration modules
+├── etl/                      # ETL modules and extractors
 │   ├── __init__.py
+│   ├── base.py               # BaseExtractor class (shared functionality)
+│   ├── utils.py              # Shared utilities (dates, paths, logging)
 │   ├── config.py             # GA4 configuration
 │   ├── gsc_config.py         # Search Console configuration
 │   ├── gsc_extractor.py      # Search Console data extractor
 │   ├── gads_config.py        # Google Ads configuration
 │   ├── gads_extractor.py     # Google Ads data extractor
 │   ├── meta_config.py        # Meta Ads configuration
-│   └── meta_extractor.py     # Meta Ads data extractor
+│   ├── meta_extractor.py     # Meta Ads data extractor
+│   ├── twitter_config.py     # Twitter/X configuration
+│   └── twitter_extractor.py  # Twitter/X data extractor
 │
 ├── scripts/                  # Runnable scripts
-│   ├── run_etl.py            # Standard GA4 ETL
-│   ├── run_etl_comprehensive.py  # Full GA4 extraction
-│   ├── run_etl_gsc.py        # Search Console ETL
-│   ├── run_etl_gads.py       # Google Ads ETL
-│   ├── run_etl_meta.py       # Meta Ads ETL
-│   ├── test_ga4_connection.py
-│   ├── test_gsc_connection.py
-│   ├── test_gads_connection.py
-│   ├── test_meta_connection.py
-│   ├── compare_meta_accounts.py  # Compare multiple Meta accounts
-│   ├── list_gads_accounts.py     # List Google Ads accounts
+│   ├── __init__.py
+│   ├── utils/                # Shared script utilities
+│   │   ├── __init__.py
+│   │   ├── cli.py            # Argument parsing, logging setup
+│   │   ├── db.py             # DuckDB loading utilities
+│   │   └── test_helpers.py   # Connection test helpers
+│   │
+│   ├── run_etl_unified.py    # Unified ETL runner (all sources)
+│   ├── test_connections_unified.py  # Unified connection tester
+│   │
+│   ├── run_etl.py            # Standard GA4 ETL (legacy)
+│   ├── run_etl_comprehensive.py  # Full GA4 extraction (legacy)
+│   ├── run_etl_gsc.py        # Search Console ETL (legacy)
+│   ├── run_etl_gads.py       # Google Ads ETL (legacy)
+│   ├── run_etl_meta.py       # Meta Ads ETL (legacy)
+│   ├── run_etl_twitter.py    # Twitter/X ETL (legacy)
+│   │
+│   ├── test_*_connection.py  # Individual connection tests (legacy)
+│   ├── compare_meta_accounts.py
+│   ├── list_gads_accounts.py
 │   └── generate_gads_refresh_token.py
+│
+├── scheduler/                # Job scheduling (for cron-style ETL)
+│   ├── __init__.py
+│   ├── jobs.py               # ETL job definitions
+│   └── runner.py             # Scheduler daemon
+│
+├── analysis/                 # ML models and insights
+│   ├── __init__.py
+│   ├── models/               # ML model definitions
+│   │   ├── __init__.py
+│   │   └── base.py           # Base model classes
+│   └── insights/             # Automated insight generation
+│       ├── __init__.py
+│       └── generators.py     # Insight generators
 │
 └── app/                      # Streamlit dashboard
     ├── __init__.py
@@ -393,28 +420,75 @@ See `data/DATABASE_DESIGN.md` for complete schema documentation.
 
 ## Running in Production
 
-### Cron Job Setup (Linux/Mac)
+### Option 1: Built-in Scheduler (Recommended)
+
+The project includes a built-in job scheduler that handles daily ETL runs:
+
+```bash
+# Install scheduler dependency
+pip install apscheduler>=3.10.0
+
+# Start the scheduler daemon
+python -m scheduler.runner --start
+
+# Or run jobs manually
+python -m scheduler.runner --run-now gads
+python -m scheduler.runner --run-all
+python -m scheduler.runner --list-jobs
+```
+
+Default schedule (staggered to avoid API rate limits):
+- GA4: 6:00 AM
+- GSC: 6:15 AM
+- Google Ads: 6:30 AM
+- Meta: 6:45 AM
+- Twitter: 7:00 AM
+
+### Option 2: System Cron (Linux/Mac)
 
 ```bash
 # Edit crontab
 crontab -e
 
-# Daily GA4 update at 6 AM
-0 6 * * * cd /path/to/rs_analytics && python scripts/run_etl.py >> logs/cron.log 2>&1
+# All sources with unified runner
+0 6 * * * cd /path/to/rs_analytics && python scripts/run_etl_unified.py --source all >> logs/cron.log 2>&1
 
-# Daily GSC update at 6:30 AM
-30 6 * * * cd /path/to/rs_analytics && python scripts/run_etl_gsc.py >> logs/cron.log 2>&1
-
-# Daily Google Ads update at 7 AM
-0 7 * * * cd /path/to/rs_analytics && python scripts/run_etl_gads.py >> logs/cron.log 2>&1
-
-# Daily Meta Ads update at 7:30 AM
-30 7 * * * cd /path/to/rs_analytics && python scripts/run_etl_meta.py >> logs/cron.log 2>&1
+# Or individual sources
+0 6 * * * cd /path/to/rs_analytics && python scripts/run_etl_unified.py --source ga4 >> logs/cron.log 2>&1
+15 6 * * * cd /path/to/rs_analytics && python scripts/run_etl_unified.py --source gsc >> logs/cron.log 2>&1
+30 6 * * * cd /path/to/rs_analytics && python scripts/run_etl_unified.py --source gads >> logs/cron.log 2>&1
+45 6 * * * cd /path/to/rs_analytics && python scripts/run_etl_unified.py --source meta >> logs/cron.log 2>&1
 ```
 
-### Windows Task Scheduler
+### Option 3: Windows Task Scheduler
 
 Create scheduled tasks for each ETL script with appropriate triggers (daily, specific times).
+
+---
+
+## Analysis and Insights (Coming Soon)
+
+The `analysis/` module provides ML-powered insights:
+
+```python
+# Install optional ML dependencies
+pip install scikit-learn>=1.3.0
+
+# Generate daily insights
+from analysis.insights import generate_daily_insights
+
+insights = generate_daily_insights("data/warehouse.duckdb", lookback_days=7)
+
+for insight in insights:
+    print(f"[{insight.priority.value}] {insight.title}")
+    print(f"  {insight.description}")
+```
+
+Features in development:
+- Anomaly detection for key metrics
+- Trend forecasting
+- Channel attribution analysis
+- Automated recommendations
 
 ---
 

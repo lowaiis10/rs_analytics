@@ -6,6 +6,9 @@ This app provides:
 - GA4 Analytics data visualization
 - Google Search Console (SEO) data visualization
 - Google Ads (PPC) data visualization
+- Meta (Facebook) Ads visualization
+- Twitter/X analytics
+- ETL Control Panel (manual data pulls)
 - ETL status monitoring
 - Configuration validation
 - Connection testing
@@ -20,6 +23,9 @@ Security:
 """
 
 import sys
+import subprocess
+import threading
+import queue
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
@@ -210,6 +216,41 @@ def check_meta_data_exists(duckdb_path: str) -> Tuple[bool, int, list]:
         return len(found_tables) > 0, total_rows, found_tables
     except:
         return False, 0, []
+
+
+def check_twitter_data_exists(duckdb_path: str) -> Tuple[bool, int, list]:
+    """Check if Twitter data exists in the database."""
+    twitter_tables = ['twitter_profile', 'twitter_tweets', 'twitter_daily_metrics']
+    
+    try:
+        conn = duckdb.connect(duckdb_path, read_only=True)
+        tables_df = conn.execute("SHOW TABLES").fetchdf()
+        existing_tables = tables_df['name'].tolist()
+        
+        found_tables = [t for t in twitter_tables if t in existing_tables]
+        
+        total_rows = 0
+        for table in found_tables:
+            try:
+                count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                total_rows += count
+            except:
+                pass
+        
+        conn.close()
+        return len(found_tables) > 0, total_rows, found_tables
+    except:
+        return False, 0, []
+
+
+@st.cache_resource
+def load_twitter_configuration():
+    """Load Twitter configuration (cached)."""
+    try:
+        from etl.twitter_config import get_twitter_config
+        return get_twitter_config(), None
+    except Exception as e:
+        return None, str(e)
 
 
 # ============================================
@@ -1254,6 +1295,8 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
     col1, col2 = st.columns(2)
     
     if 'meta_geographic' in meta_tables:
+        # Note: Geographic data is aggregated (not daily), so no date filter needed
+        geo_where = f"WHERE 1=1 {account_filter}" if account_filter else ""
         geo_query = f"""
         SELECT 
             country,
@@ -1265,7 +1308,7 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
             SUM(app_installs) as app_installs,
             CASE WHEN SUM(app_installs) > 0 THEN SUM(spend) / SUM(app_installs) ELSE 0 END as cpi
         FROM meta_geographic
-        WHERE date_start >= '{date_cutoff}' {account_filter}
+        {geo_where}
         GROUP BY country
         ORDER BY spend DESC
         """
@@ -1303,6 +1346,8 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
     col1, col2 = st.columns(2)
     
     if 'meta_devices' in meta_tables:
+        # Note: Device data is aggregated (not daily), so no date filter needed
+        device_where = f"WHERE 1=1 {account_filter}" if account_filter else ""
         device_query = f"""
         SELECT 
             device_platform,
@@ -1314,7 +1359,7 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
             CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
             SUM(app_installs) as app_installs
         FROM meta_devices
-        WHERE date_start >= '{date_cutoff}' {account_filter}
+        {device_where}
         GROUP BY device_platform, publisher_platform
         ORDER BY spend DESC
         """
@@ -1355,6 +1400,8 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
     st.subheader("👥 Demographics Analysis")
     
     if 'meta_demographics' in meta_tables:
+        # Note: Demographics data is aggregated (not daily), so no date filter needed
+        demo_where = f"WHERE 1=1 {account_filter}" if account_filter else ""
         demo_query = f"""
         SELECT 
             age,
@@ -1366,7 +1413,7 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
             CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
             SUM(app_installs) as app_installs
         FROM meta_demographics
-        WHERE date_start >= '{date_cutoff}' {account_filter}
+        {demo_where}
         GROUP BY age, gender
         ORDER BY spend DESC
         """
@@ -1468,6 +1515,666 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
                 st.markdown(insight)
         else:
             st.info("📊 Performance metrics are within normal ranges. Continue monitoring for trends.")
+
+
+# ============================================
+# Twitter/X Dashboard Page
+# ============================================
+def render_twitter_dashboard(twitter_config, duckdb_path: str):
+    """
+    Render the Twitter/X organic analytics dashboard.
+    
+    Displays:
+    - Profile metrics (followers, following, tweets)
+    - Tweet performance (impressions, engagements)
+    - Daily metrics trends
+    - Top performing tweets
+    """
+    
+    st.header("🐦 Twitter/X - Page Analytics Dashboard")
+    
+    # Check if data exists
+    has_data, total_rows, twitter_tables = check_twitter_data_exists(duckdb_path)
+    
+    if not has_data or total_rows == 0:
+        st.info("""
+        **No Twitter data available yet.**
+        
+        To populate data:
+        1. Ensure Twitter API credentials are configured in `.env`
+        2. Run the ETL: `python scripts/run_etl_twitter.py`
+        
+        **Note:** Twitter API requires a paid subscription ($100+/month) for read access.
+        """)
+        
+        # Show ETL instructions
+        with st.expander("📋 Setup Instructions"):
+            st.markdown("""
+            ### Twitter API Setup
+            
+            1. **Get API Access**: Sign up at [developer.twitter.com](https://developer.twitter.com)
+            2. **Subscribe to Basic tier** ($100/month) for read access
+            3. **Configure credentials** in `.env`:
+               ```
+               ENABLE_TWITTER=1
+               TWITTER_BEARER_TOKEN=your_bearer_token
+               TWITTER_CONSUMER_KEY=your_consumer_key
+               TWITTER_CONSUMER_SECRET=your_consumer_secret
+               TWITTER_ACCESS_TOKEN=your_access_token
+               TWITTER_ACCESS_TOKEN_SECRET=your_access_token_secret
+               TWITTER_USERNAME=YourUsername
+               ```
+            4. **Test connection**: `python scripts/test_twitter_connection.py`
+            5. **Run ETL**: `python scripts/run_etl_twitter.py`
+            """)
+        return
+    
+    # Date filter
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        date_range = st.selectbox(
+            "Time Period",
+            options=["Last 7 Days", "Last 14 Days", "Last 30 Days", "All Time"],
+            index=2,
+            key="twitter_date_range"
+        )
+    
+    # Calculate date cutoff
+    if date_range == "Last 7 Days":
+        date_cutoff = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+    elif date_range == "Last 14 Days":
+        date_cutoff = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
+    elif date_range == "Last 30 Days":
+        date_cutoff = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+    else:
+        date_cutoff = "2020-01-01"
+    
+    # ========================================
+    # SECTION 1: PROFILE OVERVIEW
+    # ========================================
+    st.subheader("👤 Profile Overview")
+    
+    if 'twitter_profile' in twitter_tables:
+        profile_query = """
+        SELECT *
+        FROM twitter_profile
+        ORDER BY snapshot_date DESC
+        LIMIT 1
+        """
+        profile_df = load_duckdb_data(duckdb_path, profile_query)
+        
+        if profile_df is not None and not profile_df.empty:
+            row = profile_df.iloc[0]
+            
+            col1, col2, col3, col4, col5 = st.columns(5)
+            
+            with col1:
+                st.metric("👥 Followers", f"{int(row['followers_count']):,}")
+            with col2:
+                st.metric("➡️ Following", f"{int(row['following_count']):,}")
+            with col3:
+                st.metric("📝 Total Tweets", f"{int(row['tweet_count']):,}")
+            with col4:
+                st.metric("📋 Listed", f"{int(row['listed_count']):,}")
+            with col5:
+                verified = "✅ Yes" if row.get('verified', False) else "❌ No"
+                st.metric("✓ Verified", verified)
+            
+            # Profile info
+            with st.expander("📄 Profile Details"):
+                st.markdown(f"**Username:** @{row['username']}")
+                st.markdown(f"**Name:** {row['name']}")
+                st.markdown(f"**Bio:** {row.get('description', 'N/A')}")
+                st.markdown(f"**Location:** {row.get('location', 'N/A')}")
+                st.markdown(f"**Account Created:** {row.get('created_at', 'N/A')[:10] if row.get('created_at') else 'N/A'}")
+                st.markdown(f"**Last Updated:** {row['snapshot_date']}")
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 2: ENGAGEMENT METRICS
+    # ========================================
+    st.subheader("📊 Engagement Metrics")
+    
+    if 'twitter_tweets' in twitter_tables:
+        # Aggregate metrics
+        metrics_query = f"""
+        SELECT 
+            COUNT(*) as total_tweets,
+            SUM(impressions) as total_impressions,
+            SUM(likes) as total_likes,
+            SUM(retweets) as total_retweets,
+            SUM(replies) as total_replies,
+            SUM(quotes) as total_quotes,
+            SUM(bookmarks) as total_bookmarks,
+            SUM(likes + retweets + replies + quotes + bookmarks) as total_engagements,
+            AVG(likes) as avg_likes,
+            AVG(retweets) as avg_retweets
+        FROM twitter_tweets
+        WHERE created_date >= '{date_cutoff}'
+        """
+        
+        metrics_df = load_duckdb_data(duckdb_path, metrics_query)
+        
+        if metrics_df is not None and not metrics_df.empty:
+            row = metrics_df.iloc[0]
+            
+            col1, col2, col3, col4, col5, col6 = st.columns(6)
+            
+            with col1:
+                st.metric("📝 Tweets", f"{int(row['total_tweets'] or 0):,}")
+            with col2:
+                st.metric("👁️ Impressions", f"{int(row['total_impressions'] or 0):,}")
+            with col3:
+                st.metric("❤️ Likes", f"{int(row['total_likes'] or 0):,}")
+            with col4:
+                st.metric("🔄 Retweets", f"{int(row['total_retweets'] or 0):,}")
+            with col5:
+                st.metric("💬 Replies", f"{int(row['total_replies'] or 0):,}")
+            with col6:
+                engagements = int(row['total_engagements'] or 0)
+                impressions = int(row['total_impressions'] or 1)
+                engagement_rate = (engagements / impressions * 100) if impressions > 0 else 0
+                st.metric("📈 Eng. Rate", f"{engagement_rate:.2f}%")
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 3: DAILY TRENDS
+    # ========================================
+    st.subheader("📈 Daily Performance Trends")
+    
+    if 'twitter_daily_metrics' in twitter_tables:
+        trend_query = f"""
+        SELECT 
+            date,
+            tweet_count,
+            impressions,
+            likes,
+            retweets,
+            replies,
+            quotes,
+            total_engagements,
+            engagement_rate
+        FROM twitter_daily_metrics
+        WHERE date >= '{date_cutoff}'
+        ORDER BY date
+        """
+        
+        trend_df = load_duckdb_data(duckdb_path, trend_query)
+        
+        if trend_df is not None and not trend_df.empty:
+            tab1, tab2, tab3, tab4 = st.tabs(["📊 Impressions", "❤️ Engagements", "📝 Tweets", "📈 Eng. Rate"])
+            
+            with tab1:
+                st.bar_chart(trend_df.set_index('date')['impressions'], use_container_width=True)
+                st.caption("Daily Impressions")
+            
+            with tab2:
+                # Stacked engagement chart
+                eng_df = trend_df.set_index('date')[['likes', 'retweets', 'replies', 'quotes']]
+                st.bar_chart(eng_df, use_container_width=True)
+                st.caption("Daily Engagements by Type")
+            
+            with tab3:
+                st.bar_chart(trend_df.set_index('date')['tweet_count'], use_container_width=True)
+                st.caption("Daily Tweet Count")
+            
+            with tab4:
+                st.line_chart(trend_df.set_index('date')['engagement_rate'], use_container_width=True)
+                st.caption("Daily Engagement Rate (%)")
+        else:
+            st.info("No daily metrics data available for the selected period.")
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 4: TOP PERFORMING TWEETS
+    # ========================================
+    st.subheader("🏆 Top Performing Tweets")
+    
+    if 'twitter_tweets' in twitter_tables:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            sort_by = st.selectbox(
+                "Sort by",
+                options=["impressions", "likes", "retweets", "replies", "total_engagement"],
+                format_func=lambda x: {
+                    "impressions": "👁️ Impressions",
+                    "likes": "❤️ Likes",
+                    "retweets": "🔄 Retweets",
+                    "replies": "💬 Replies",
+                    "total_engagement": "📊 Total Engagement"
+                }.get(x, x),
+                key="twitter_sort"
+            )
+        
+        with col2:
+            tweet_type_filter = st.selectbox(
+                "Tweet Type",
+                options=["All", "original", "reply", "quote"],
+                format_func=lambda x: {
+                    "All": "All Tweets",
+                    "original": "Original Tweets",
+                    "reply": "Replies",
+                    "quote": "Quote Tweets"
+                }.get(x, x),
+                key="twitter_type"
+            )
+        
+        # Build query
+        type_filter = f"AND tweet_type = '{tweet_type_filter}'" if tweet_type_filter != "All" else ""
+        
+        if sort_by == "total_engagement":
+            order_by = "(likes + retweets + replies + quotes + bookmarks)"
+        else:
+            order_by = sort_by
+        
+        top_tweets_query = f"""
+        SELECT 
+            tweet_id,
+            text,
+            tweet_type,
+            created_date,
+            impressions,
+            likes,
+            retweets,
+            replies,
+            quotes,
+            bookmarks,
+            (likes + retweets + replies + quotes + bookmarks) as total_engagement
+        FROM twitter_tweets
+        WHERE created_date >= '{date_cutoff}' {type_filter}
+        ORDER BY {order_by} DESC
+        LIMIT 10
+        """
+        
+        top_df = load_duckdb_data(duckdb_path, top_tweets_query)
+        
+        if top_df is not None and not top_df.empty:
+            for _, tweet in top_df.iterrows():
+                with st.container():
+                    # Tweet header
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        text = tweet['text']
+                        if len(text) > 200:
+                            text = text[:200] + "..."
+                        st.markdown(f"**{tweet['created_date']}** • _{tweet['tweet_type']}_")
+                        st.markdown(text)
+                    
+                    with col2:
+                        st.caption(f"👁️ {int(tweet['impressions'] or 0):,}")
+                    
+                    # Metrics row
+                    mcol1, mcol2, mcol3, mcol4, mcol5 = st.columns(5)
+                    mcol1.caption(f"❤️ {int(tweet['likes']):,}")
+                    mcol2.caption(f"🔄 {int(tweet['retweets']):,}")
+                    mcol3.caption(f"💬 {int(tweet['replies']):,}")
+                    mcol4.caption(f"📝 {int(tweet['quotes']):,}")
+                    mcol5.caption(f"🔖 {int(tweet['bookmarks']):,}")
+                    
+                    st.divider()
+        else:
+            st.info("No tweets found for the selected filters.")
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 5: TWEET TYPE BREAKDOWN
+    # ========================================
+    st.subheader("📊 Tweet Type Analysis")
+    
+    if 'twitter_tweets' in twitter_tables:
+        type_query = f"""
+        SELECT 
+            tweet_type,
+            COUNT(*) as count,
+            SUM(impressions) as impressions,
+            SUM(likes) as likes,
+            SUM(retweets) as retweets,
+            AVG(impressions) as avg_impressions,
+            AVG(likes) as avg_likes
+        FROM twitter_tweets
+        WHERE created_date >= '{date_cutoff}'
+        GROUP BY tweet_type
+        ORDER BY count DESC
+        """
+        
+        type_df = load_duckdb_data(duckdb_path, type_query)
+        
+        if type_df is not None and not type_df.empty:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**📊 Tweet Count by Type**")
+                st.bar_chart(type_df.set_index('tweet_type')['count'])
+            
+            with col2:
+                st.markdown("**📈 Avg Engagement by Type**")
+                type_df['avg_engagement'] = type_df['avg_likes'] + (type_df['impressions'] / type_df['count'].replace(0, 1) * 0.01)
+                st.bar_chart(type_df.set_index('tweet_type')['avg_likes'])
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 6: RAW DATA EXPLORER
+    # ========================================
+    with st.expander("🔍 Raw Data Explorer"):
+        table_to_view = st.selectbox(
+            "Select Table",
+            options=twitter_tables,
+            key="twitter_raw_table"
+        )
+        
+        if table_to_view:
+            raw_query = f"SELECT * FROM {table_to_view} ORDER BY 1 DESC LIMIT 100"
+            raw_df = load_duckdb_data(duckdb_path, raw_query)
+            
+            if raw_df is not None:
+                st.dataframe(raw_df, use_container_width=True, hide_index=True)
+                st.caption(f"Showing up to 100 rows from {table_to_view}")
+
+
+# ============================================
+# ETL Control Panel
+# ============================================
+def render_etl_control_panel(duckdb_path: str):
+    """
+    Render the ETL Control Panel for manual data pulls.
+    
+    Provides buttons for:
+    - Full Lifetime Pull (all historical data)
+    - Daily Refresh (incremental update, last 3 days)
+    - Individual source pulls
+    - ETL status monitoring
+    """
+    
+    st.header("🔧 ETL Control Panel")
+    st.markdown("""
+    Use this panel to manually trigger data extraction from all connected platforms.
+    
+    - **Lifetime Pull**: Extracts ALL historical data (replaces existing tables)
+    - **Daily Refresh**: Extracts last 3 days (updates existing data without losing history)
+    """)
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 1: Quick Actions
+    # ========================================
+    st.subheader("⚡ Quick Actions")
+    
+    col1, col2 = st.columns(2)
+    
+    # Initialize session state for ETL status
+    if 'etl_running' not in st.session_state:
+        st.session_state.etl_running = False
+    if 'etl_output' not in st.session_state:
+        st.session_state.etl_output = ""
+    if 'etl_status' not in st.session_state:
+        st.session_state.etl_status = None
+    
+    with col1:
+        st.markdown("### 📥 Full Lifetime Pull")
+        st.caption("Extract ALL historical data from all platforms. This replaces existing data.")
+        
+        if st.button(
+            "🚀 Run Lifetime ETL",
+            disabled=st.session_state.etl_running,
+            use_container_width=True,
+            type="primary"
+        ):
+            st.session_state.etl_running = True
+            st.session_state.etl_status = "running"
+            
+            with st.spinner("Running Lifetime ETL... This may take several minutes."):
+                try:
+                    result = subprocess.run(
+                        [sys.executable, "scripts/run_etl_unified.py", 
+                         "--source", "all", "--lifetime"],
+                        capture_output=True,
+                        text=True,
+                        cwd=str(project_root),
+                        timeout=1800  # 30 minute timeout
+                    )
+                    
+                    st.session_state.etl_output = result.stdout + "\n" + result.stderr
+                    
+                    if result.returncode == 0:
+                        st.session_state.etl_status = "success"
+                        st.success("✅ Lifetime ETL completed successfully!")
+                    else:
+                        st.session_state.etl_status = "error"
+                        st.error(f"❌ ETL failed with exit code {result.returncode}")
+                        
+                except subprocess.TimeoutExpired:
+                    st.session_state.etl_status = "timeout"
+                    st.error("⏱️ ETL timed out after 30 minutes")
+                except Exception as e:
+                    st.session_state.etl_status = "error"
+                    st.error(f"❌ ETL failed: {e}")
+                finally:
+                    st.session_state.etl_running = False
+                    # Clear cache to refresh data
+                    st.cache_data.clear()
+    
+    with col2:
+        st.markdown("### 🔄 Daily Refresh")
+        st.caption("Extract last 3 days of data. Updates existing records without losing history.")
+        
+        if st.button(
+            "🔄 Run Daily Refresh",
+            disabled=st.session_state.etl_running,
+            use_container_width=True,
+            type="secondary"
+        ):
+            st.session_state.etl_running = True
+            st.session_state.etl_status = "running"
+            
+            with st.spinner("Running Daily Refresh... This may take a few minutes."):
+                try:
+                    result = subprocess.run(
+                        [sys.executable, "scripts/run_etl_unified.py", 
+                         "--source", "all", "--lookback-days", "3"],
+                        capture_output=True,
+                        text=True,
+                        cwd=str(project_root),
+                        timeout=900  # 15 minute timeout
+                    )
+                    
+                    st.session_state.etl_output = result.stdout + "\n" + result.stderr
+                    
+                    if result.returncode == 0:
+                        st.session_state.etl_status = "success"
+                        st.success("✅ Daily refresh completed successfully!")
+                    else:
+                        st.session_state.etl_status = "error"
+                        st.error(f"❌ ETL failed with exit code {result.returncode}")
+                        
+                except subprocess.TimeoutExpired:
+                    st.session_state.etl_status = "timeout"
+                    st.error("⏱️ ETL timed out after 15 minutes")
+                except Exception as e:
+                    st.session_state.etl_status = "error"
+                    st.error(f"❌ ETL failed: {e}")
+                finally:
+                    st.session_state.etl_running = False
+                    # Clear cache to refresh data
+                    st.cache_data.clear()
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 2: Individual Source ETL
+    # ========================================
+    st.subheader("🎯 Individual Source ETL")
+    st.caption("Run ETL for specific data sources")
+    
+    source_col1, source_col2, source_col3, source_col4, source_col5 = st.columns(5)
+    
+    sources = [
+        ("ga4", "📊 GA4", source_col1),
+        ("gsc", "🔍 GSC", source_col2),
+        ("gads", "💰 Google Ads", source_col3),
+        ("meta", "📘 Meta", source_col4),
+        ("twitter", "🐦 Twitter", source_col5),
+    ]
+    
+    # Mode selection
+    mode = st.radio(
+        "ETL Mode",
+        options=["Daily (last 3 days)", "Lifetime (all data)"],
+        horizontal=True,
+        key="etl_mode_radio"
+    )
+    
+    is_lifetime = "Lifetime" in mode
+    
+    for source_id, source_label, col in sources:
+        with col:
+            if st.button(
+                source_label,
+                disabled=st.session_state.etl_running,
+                use_container_width=True,
+                key=f"etl_{source_id}"
+            ):
+                st.session_state.etl_running = True
+                
+                with st.spinner(f"Running {source_label} ETL..."):
+                    try:
+                        cmd = [sys.executable, "scripts/run_etl_unified.py", 
+                               "--source", source_id]
+                        if is_lifetime:
+                            cmd.append("--lifetime")
+                        else:
+                            cmd.extend(["--lookback-days", "3"])
+                        
+                        result = subprocess.run(
+                            cmd,
+                            capture_output=True,
+                            text=True,
+                            cwd=str(project_root),
+                            timeout=600  # 10 minute timeout
+                        )
+                        
+                        st.session_state.etl_output = result.stdout + "\n" + result.stderr
+                        
+                        if result.returncode == 0:
+                            st.success(f"✅ {source_label} ETL completed!")
+                        else:
+                            st.error(f"❌ {source_label} ETL failed")
+                            
+                    except subprocess.TimeoutExpired:
+                        st.error(f"⏱️ {source_label} ETL timed out")
+                    except Exception as e:
+                        st.error(f"❌ {source_label} ETL failed: {e}")
+                    finally:
+                        st.session_state.etl_running = False
+                        st.cache_data.clear()
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 3: ETL Output Log
+    # ========================================
+    with st.expander("📋 ETL Output Log", expanded=st.session_state.etl_status == "error"):
+        if st.session_state.etl_output:
+            st.code(st.session_state.etl_output, language="text")
+        else:
+            st.info("No ETL output yet. Run an ETL job to see output.")
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 4: Data Status Summary
+    # ========================================
+    st.subheader("📊 Current Data Status")
+    
+    table_info = get_table_info(duckdb_path)
+    
+    if table_info:
+        # Group by source
+        source_groups = {
+            'GA4': ('ga4_', '📊'),
+            'GSC': ('gsc_', '🔍'),
+            'Google Ads': ('gads_', '💰'),
+            'Meta Ads': ('meta_', '📘'),
+            'Twitter': ('twitter_', '🐦'),
+        }
+        
+        data_rows = []
+        for source_name, (prefix, icon) in source_groups.items():
+            source_tables = {k: v for k, v in table_info.items() if k.startswith(prefix)}
+            total_rows = sum(source_tables.values())
+            table_count = len(source_tables)
+            
+            # Get date range if possible
+            date_range = "N/A"
+            if total_rows > 0:
+                # Try to get date range from a table that has a date column
+                for table in source_tables.keys():
+                    try:
+                        conn = duckdb.connect(duckdb_path, read_only=True)
+                        result = conn.execute(f"SELECT MIN(date), MAX(date) FROM {table}").fetchone()
+                        conn.close()
+                        if result and result[0]:
+                            date_range = f"{result[0]} to {result[1]}"
+                            break
+                    except:
+                        continue
+            
+            data_rows.append({
+                'Source': f"{icon} {source_name}",
+                'Tables': table_count,
+                'Total Rows': f"{total_rows:,}",
+                'Date Range': date_range,
+                'Status': '✅ Has Data' if total_rows > 0 else '⚠️ No Data'
+            })
+        
+        status_df = pd.DataFrame(data_rows)
+        st.dataframe(status_df, use_container_width=True, hide_index=True)
+        
+        # Detailed table breakdown
+        with st.expander("📋 Detailed Table Breakdown"):
+            for table_name, row_count in sorted(table_info.items()):
+                st.text(f"  {table_name}: {row_count:,} rows")
+    else:
+        st.warning("No data tables found in the database. Run a Lifetime ETL to populate data.")
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 5: CLI Reference
+    # ========================================
+    with st.expander("💻 Command Line Reference"):
+        st.markdown("""
+        You can also run ETL from the command line:
+        
+        **Lifetime Pull (all data):**
+        ```bash
+        python scripts/run_etl_unified.py --source all --lifetime
+        ```
+        
+        **Daily Refresh (last 3 days):**
+        ```bash
+        python scripts/run_etl_unified.py --source all --lookback-days 3
+        ```
+        
+        **Specific Source:**
+        ```bash
+        python scripts/run_etl_unified.py --source ga4 --lookback-days 30
+        python scripts/run_etl_unified.py --source gads --lifetime
+        python scripts/run_etl_unified.py --source meta --start-date 2024-01-01
+        ```
+        
+        **Test Connections:**
+        ```bash
+        python scripts/test_connections_unified.py --all
+        python scripts/test_connections_unified.py --source gads
+        ```
+        """)
 
 
 # ============================================
@@ -1673,6 +2380,8 @@ def main():
                 "🔍 Search Console (SEO)", 
                 "💰 Google Ads (PPC)", 
                 "📘 Meta Ads",
+                "🐦 Twitter/X",
+                "🔧 ETL Control",
                 "⚙️ Settings"
             ],
             index=0
@@ -1688,6 +2397,7 @@ def main():
         gsc_rows = sum(v for k, v in table_info.items() if k.startswith('gsc_'))
         gads_rows = sum(v for k, v in table_info.items() if k.startswith('gads_'))
         meta_rows = sum(v for k, v in table_info.items() if k.startswith('meta_'))
+        twitter_rows = sum(v for k, v in table_info.items() if k.startswith('twitter_'))
         
         if ga4_rows > 0:
             st.success(f"GA4: {ga4_rows:,} rows")
@@ -1708,6 +2418,11 @@ def main():
             st.success(f"Meta Ads: {meta_rows:,} rows")
         else:
             st.warning("Meta Ads: No data")
+        
+        if twitter_rows > 0:
+            st.success(f"Twitter: {twitter_rows:,} rows")
+        else:
+            st.warning("Twitter: No data")
         
         st.divider()
         
@@ -1734,6 +2449,13 @@ def main():
     
     elif page == "📘 Meta Ads":
         render_meta_dashboard(meta_config, duckdb_path)
+    
+    elif page == "🐦 Twitter/X":
+        twitter_config, twitter_error = load_twitter_configuration()
+        render_twitter_dashboard(twitter_config, duckdb_path)
+    
+    elif page == "🔧 ETL Control":
+        render_etl_control_panel(duckdb_path)
     
     elif page == "⚙️ Settings":
         render_settings_page(ga4_config, gsc_config, gads_config, duckdb_path)
