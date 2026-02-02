@@ -80,6 +80,17 @@ def load_gads_configuration():
         return None, str(e)
 
 
+@st.cache_resource
+def load_meta_configuration():
+    """Load and validate Meta Ads configuration."""
+    try:
+        from etl.meta_config import get_meta_config
+        config = get_meta_config()
+        return config, None
+    except Exception as e:
+        return None, str(e)
+
+
 # ============================================
 # Data Loading Functions
 # ============================================
@@ -157,6 +168,35 @@ def check_gads_data_exists(duckdb_path: str) -> Tuple[bool, int, list]:
         existing_tables = tables_df['name'].tolist()
         
         found_tables = [t for t in gads_tables if t in existing_tables]
+        
+        total_rows = 0
+        for table in found_tables:
+            try:
+                count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                total_rows += count
+            except:
+                pass
+        
+        conn.close()
+        return len(found_tables) > 0, total_rows, found_tables
+    except:
+        return False, 0, []
+
+
+def check_meta_data_exists(duckdb_path: str) -> Tuple[bool, int, list]:
+    """Check if Meta Ads data exists in the database."""
+    meta_tables = [
+        'meta_daily_account', 'meta_campaigns', 'meta_campaign_insights',
+        'meta_adsets', 'meta_adset_insights', 'meta_ads', 'meta_ad_insights',
+        'meta_geographic', 'meta_devices', 'meta_demographics'
+    ]
+    
+    try:
+        conn = duckdb.connect(duckdb_path, read_only=True)
+        tables_df = conn.execute("SHOW TABLES").fetchdf()
+        existing_tables = tables_df['name'].tolist()
+        
+        found_tables = [t for t in meta_tables if t in existing_tables]
         
         total_rows = 0
         for table in found_tables:
@@ -792,6 +832,645 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
 
 
 # ============================================
+# Meta Ads Dashboard Page (MBA-Level Marketing Analytics)
+# ============================================
+def render_meta_dashboard(meta_config, duckdb_path: str):
+    """
+    Render the Meta (Facebook) Ads MBA-level marketing dashboard.
+    
+    Features comprehensive marketing analytics including:
+    - Executive KPIs with period comparisons
+    - Campaign performance analysis
+    - Ad Set (targeting) effectiveness
+    - Creative performance analysis
+    - Geographic and demographic insights
+    - ROI and efficiency metrics
+    - Budget pacing and optimization recommendations
+    """
+    
+    st.header("📘 Meta Ads - Marketing Analytics Dashboard")
+    
+    # Check if Meta data exists
+    has_data, total_rows, meta_tables = check_meta_data_exists(duckdb_path)
+    
+    if not has_data:
+        st.info("""
+        **No Meta Ads data available yet.**
+        
+        Run the Meta Ads ETL pipeline to populate the database:
+        ```bash
+        python scripts/run_etl_meta.py --lifetime
+        ```
+        
+        First, test your Meta connection:
+        ```bash
+        python scripts/test_meta_connection.py
+        ```
+        """)
+        
+        if meta_config:
+            st.caption(f"Configured accounts: {', '.join(meta_config.ad_account_ids)}")
+        return
+    
+    # Show data summary
+    st.success(f"📊 Meta Ads data loaded: **{total_rows:,}** total rows across **{len(meta_tables)}** tables")
+    
+    # ========================================
+    # Date Range Filter
+    # ========================================
+    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+    
+    with col1:
+        date_range = st.selectbox(
+            "📅 Analysis Period",
+            options=["Last 7 days", "Last 14 days", "Last 30 days", "Last 90 days", "Last 180 days", "All time"],
+            index=2,
+            key="meta_date_range"
+        )
+    
+    # Calculate date filter
+    days_map = {
+        "Last 7 days": 7, "Last 14 days": 14, "Last 30 days": 30,
+        "Last 90 days": 90, "Last 180 days": 180, "All time": 9999
+    }
+    days = days_map.get(date_range, 30)
+    date_cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    prev_date_cutoff = (datetime.now() - timedelta(days=days*2)).strftime('%Y-%m-%d')
+    
+    # Get account selector if multiple accounts
+    with col2:
+        accounts_query = "SELECT DISTINCT ad_account_id FROM meta_daily_account"
+        accounts_df = load_duckdb_data(duckdb_path, accounts_query)
+        
+        if accounts_df is not None and len(accounts_df) > 1:
+            account_options = ["All Accounts"] + accounts_df['ad_account_id'].tolist()
+            selected_account = st.selectbox("Account", account_options, key="meta_account")
+            account_filter = "" if selected_account == "All Accounts" else f"AND ad_account_id = '{selected_account}'"
+        else:
+            selected_account = "All Accounts"
+            account_filter = ""
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 1: EXECUTIVE KPI DASHBOARD
+    # ========================================
+    st.subheader("🎯 Executive Summary")
+    
+    # Current period metrics
+    kpi_query = f"""
+    SELECT 
+        SUM(impressions) as impressions,
+        SUM(reach) as reach,
+        SUM(clicks) as clicks,
+        SUM(spend) as spend,
+        CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 100.0 / SUM(impressions) ELSE 0 END as ctr,
+        CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
+        CASE WHEN SUM(impressions) > 0 THEN SUM(spend) * 1000.0 / SUM(impressions) ELSE 0 END as cpm,
+        CASE WHEN SUM(reach) > 0 THEN SUM(impressions) * 1.0 / SUM(reach) ELSE 0 END as frequency,
+        SUM(app_installs) as app_installs,
+        SUM(purchases) as purchases,
+        SUM(purchase_value) as revenue,
+        CASE WHEN SUM(app_installs) > 0 THEN SUM(spend) / SUM(app_installs) ELSE 0 END as cpi
+    FROM meta_daily_account
+    WHERE date >= '{date_cutoff}' {account_filter}
+    """
+    
+    # Previous period metrics for comparison
+    prev_kpi_query = f"""
+    SELECT 
+        SUM(impressions) as impressions,
+        SUM(spend) as spend,
+        SUM(clicks) as clicks,
+        SUM(app_installs) as app_installs
+    FROM meta_daily_account
+    WHERE date >= '{prev_date_cutoff}' AND date < '{date_cutoff}' {account_filter}
+    """
+    
+    kpi_df = load_duckdb_data(duckdb_path, kpi_query)
+    prev_kpi_df = load_duckdb_data(duckdb_path, prev_kpi_query)
+    
+    if kpi_df is not None and not kpi_df.empty and kpi_df['spend'].iloc[0]:
+        row = kpi_df.iloc[0]
+        prev_row = prev_kpi_df.iloc[0] if prev_kpi_df is not None and not prev_kpi_df.empty else None
+        
+        # Calculate deltas
+        def calc_delta(current, previous):
+            if previous and previous > 0:
+                return ((current - previous) / previous) * 100
+            return None
+        
+        # Row 1: Core metrics
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
+        
+        with col1:
+            spend = row['spend'] or 0
+            prev_spend = prev_row['spend'] if prev_row is not None else None
+            delta = calc_delta(spend, prev_spend)
+            st.metric(
+                "💰 Total Spend",
+                f"${spend:,.2f}",
+                delta=f"{delta:+.1f}%" if delta else None,
+                delta_color="inverse"
+            )
+        
+        with col2:
+            impressions = int(row['impressions'] or 0)
+            delta = calc_delta(impressions, prev_row['impressions'] if prev_row is not None else None)
+            st.metric(
+                "👁️ Impressions",
+                f"{impressions:,}",
+                delta=f"{delta:+.1f}%" if delta else None
+            )
+        
+        with col3:
+            reach = int(row['reach'] or 0)
+            st.metric("👥 Unique Reach", f"{reach:,}")
+        
+        with col4:
+            clicks = int(row['clicks'] or 0)
+            delta = calc_delta(clicks, prev_row['clicks'] if prev_row is not None else None)
+            st.metric(
+                "🖱️ Clicks",
+                f"{clicks:,}",
+                delta=f"{delta:+.1f}%" if delta else None
+            )
+        
+        with col5:
+            ctr = row['ctr'] or 0
+            st.metric("📈 CTR", f"{ctr:.2f}%")
+        
+        with col6:
+            cpc = row['cpc'] or 0
+            st.metric("💵 CPC", f"${cpc:.2f}")
+        
+        # Row 2: Performance & Conversion metrics
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
+        
+        with col1:
+            cpm = row['cpm'] or 0
+            st.metric("📊 CPM", f"${cpm:.2f}")
+        
+        with col2:
+            frequency = row['frequency'] or 0
+            st.metric("🔄 Frequency", f"{frequency:.2f}")
+        
+        with col3:
+            installs = int(row['app_installs'] or 0)
+            delta = calc_delta(installs, prev_row['app_installs'] if prev_row is not None else None)
+            st.metric(
+                "📱 App Installs",
+                f"{installs:,}",
+                delta=f"{delta:+.1f}%" if delta else None
+            )
+        
+        with col4:
+            cpi = row['cpi'] or 0
+            st.metric("💳 Cost/Install", f"${cpi:.2f}")
+        
+        with col5:
+            purchases = int(row['purchases'] or 0)
+            st.metric("🛒 Purchases", f"{purchases:,}")
+        
+        with col6:
+            revenue = row['revenue'] or 0
+            roas = (revenue / spend * 100) if spend > 0 else 0
+            st.metric("📈 ROAS", f"{roas:.1f}%")
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 2: PERFORMANCE TRENDS
+    # ========================================
+    st.subheader("📈 Performance Trends")
+    
+    trend_query = f"""
+    SELECT 
+        date,
+        SUM(impressions) as impressions,
+        SUM(clicks) as clicks,
+        SUM(spend) as spend,
+        SUM(app_installs) as app_installs,
+        CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 100.0 / SUM(impressions) ELSE 0 END as ctr,
+        CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc
+    FROM meta_daily_account
+    WHERE date >= '{date_cutoff}' {account_filter}
+    GROUP BY date
+    ORDER BY date
+    """
+    
+    trend_df = load_duckdb_data(duckdb_path, trend_query)
+    
+    if trend_df is not None and not trend_df.empty:
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Spend & Clicks", "👁️ Impressions", "📱 Conversions", "📈 Efficiency"])
+        
+        with tab1:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.line_chart(trend_df.set_index('date')['spend'], use_container_width=True)
+                st.caption("Daily Spend ($)")
+            with col2:
+                st.line_chart(trend_df.set_index('date')['clicks'], use_container_width=True)
+                st.caption("Daily Clicks")
+        
+        with tab2:
+            st.area_chart(trend_df.set_index('date')['impressions'], use_container_width=True)
+            st.caption("Daily Impressions")
+        
+        with tab3:
+            st.bar_chart(trend_df.set_index('date')['app_installs'], use_container_width=True)
+            st.caption("Daily App Installs")
+        
+        with tab4:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.line_chart(trend_df.set_index('date')['ctr'], use_container_width=True)
+                st.caption("Click-Through Rate (%)")
+            with col2:
+                st.line_chart(trend_df.set_index('date')['cpc'], use_container_width=True)
+                st.caption("Cost Per Click ($)")
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 3: CAMPAIGN PERFORMANCE
+    # ========================================
+    st.subheader("🎯 Campaign Performance Analysis")
+    
+    if 'meta_campaign_insights' in meta_tables:
+        campaign_query = f"""
+        SELECT 
+            campaign_name,
+            campaign_id,
+            SUM(impressions) as impressions,
+            SUM(reach) as reach,
+            SUM(clicks) as clicks,
+            SUM(spend) as spend,
+            CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 100.0 / SUM(impressions) ELSE 0 END as ctr,
+            CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
+            CASE WHEN SUM(impressions) > 0 THEN SUM(spend) * 1000.0 / SUM(impressions) ELSE 0 END as cpm,
+            SUM(app_installs) as app_installs,
+            CASE WHEN SUM(app_installs) > 0 THEN SUM(spend) / SUM(app_installs) ELSE 0 END as cpi,
+            SUM(purchases) as purchases,
+            SUM(purchase_value) as revenue
+        FROM meta_campaign_insights
+        WHERE date >= '{date_cutoff}' {account_filter}
+        GROUP BY campaign_name, campaign_id
+        ORDER BY spend DESC
+        """
+        
+        campaign_df = load_duckdb_data(duckdb_path, campaign_query)
+        
+        if campaign_df is not None and not campaign_df.empty:
+            # Campaign efficiency quadrant
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                # Format for display
+                display_df = campaign_df.copy()
+                display_df['spend'] = display_df['spend'].apply(lambda x: f"${x:,.2f}")
+                display_df['ctr'] = display_df['ctr'].apply(lambda x: f"{x:.2f}%")
+                display_df['cpc'] = display_df['cpc'].apply(lambda x: f"${x:.2f}")
+                display_df['cpm'] = display_df['cpm'].apply(lambda x: f"${x:.2f}")
+                display_df['cpi'] = display_df['cpi'].apply(lambda x: f"${x:.2f}" if x > 0 else "-")
+                display_df['impressions'] = display_df['impressions'].apply(lambda x: f"{int(x):,}")
+                display_df['clicks'] = display_df['clicks'].apply(lambda x: f"{int(x):,}")
+                display_df['app_installs'] = display_df['app_installs'].apply(lambda x: f"{int(x):,}" if x > 0 else "-")
+                
+                st.dataframe(
+                    display_df[['campaign_name', 'spend', 'impressions', 'clicks', 'ctr', 'cpc', 'app_installs', 'cpi']],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "campaign_name": "Campaign",
+                        "spend": "Spend",
+                        "impressions": "Impressions",
+                        "clicks": "Clicks",
+                        "ctr": "CTR",
+                        "cpc": "CPC",
+                        "app_installs": "Installs",
+                        "cpi": "CPI"
+                    }
+                )
+            
+            with col2:
+                st.markdown("**📊 Spend Distribution**")
+                spend_data = campaign_df[['campaign_name', 'spend']].head(10)
+                spend_data = spend_data[spend_data['spend'] > 0]
+                if not spend_data.empty:
+                    st.bar_chart(spend_data.set_index('campaign_name')['spend'])
+        
+        # Campaign time series
+        st.markdown("**📈 Campaign Performance Over Time**")
+        
+        campaign_trend_query = f"""
+        SELECT 
+            date,
+            campaign_name,
+            SUM(spend) as spend,
+            SUM(clicks) as clicks
+        FROM meta_campaign_insights
+        WHERE date >= '{date_cutoff}' {account_filter}
+        GROUP BY date, campaign_name
+        ORDER BY date
+        """
+        
+        campaign_trend_df = load_duckdb_data(duckdb_path, campaign_trend_query)
+        
+        if campaign_trend_df is not None and not campaign_trend_df.empty:
+            # Pivot for time series
+            pivot_df = campaign_trend_df.pivot_table(
+                index='date', 
+                columns='campaign_name', 
+                values='spend', 
+                aggfunc='sum'
+            ).fillna(0)
+            
+            if not pivot_df.empty:
+                st.line_chart(pivot_df, use_container_width=True)
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 4: AD SET PERFORMANCE
+    # ========================================
+    st.subheader("🎨 Ad Set (Targeting) Analysis")
+    
+    if 'meta_adset_insights' in meta_tables:
+        adset_query = f"""
+        SELECT 
+            adset_name,
+            campaign_name,
+            SUM(impressions) as impressions,
+            SUM(clicks) as clicks,
+            SUM(spend) as spend,
+            CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 100.0 / SUM(impressions) ELSE 0 END as ctr,
+            CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
+            SUM(app_installs) as app_installs,
+            CASE WHEN SUM(app_installs) > 0 THEN SUM(spend) / SUM(app_installs) ELSE 0 END as cpi
+        FROM meta_adset_insights
+        WHERE date >= '{date_cutoff}' {account_filter}
+        GROUP BY adset_name, campaign_name
+        ORDER BY spend DESC
+        LIMIT 20
+        """
+        
+        adset_df = load_duckdb_data(duckdb_path, adset_query)
+        
+        if adset_df is not None and not adset_df.empty:
+            # Format for display
+            display_df = adset_df.copy()
+            display_df['spend'] = display_df['spend'].apply(lambda x: f"${x:,.2f}")
+            display_df['ctr'] = display_df['ctr'].apply(lambda x: f"{x:.2f}%")
+            display_df['cpc'] = display_df['cpc'].apply(lambda x: f"${x:.2f}")
+            display_df['cpi'] = display_df['cpi'].apply(lambda x: f"${x:.2f}" if x > 0 else "-")
+            display_df['impressions'] = display_df['impressions'].apply(lambda x: f"{int(x):,}")
+            display_df['clicks'] = display_df['clicks'].apply(lambda x: f"{int(x):,}")
+            display_df['app_installs'] = display_df['app_installs'].apply(lambda x: f"{int(x):,}" if x > 0 else "-")
+            
+            st.dataframe(
+                display_df[['adset_name', 'campaign_name', 'spend', 'clicks', 'ctr', 'cpc', 'app_installs', 'cpi']],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "adset_name": "Ad Set",
+                    "campaign_name": "Campaign",
+                    "spend": "Spend",
+                    "clicks": "Clicks",
+                    "ctr": "CTR",
+                    "cpc": "CPC",
+                    "app_installs": "Installs",
+                    "cpi": "CPI"
+                }
+            )
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 5: GEOGRAPHIC ANALYSIS
+    # ========================================
+    st.subheader("🌍 Geographic Performance")
+    
+    col1, col2 = st.columns(2)
+    
+    if 'meta_geographic' in meta_tables:
+        geo_query = f"""
+        SELECT 
+            country,
+            SUM(impressions) as impressions,
+            SUM(clicks) as clicks,
+            SUM(spend) as spend,
+            CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 100.0 / SUM(impressions) ELSE 0 END as ctr,
+            CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
+            SUM(app_installs) as app_installs,
+            CASE WHEN SUM(app_installs) > 0 THEN SUM(spend) / SUM(app_installs) ELSE 0 END as cpi
+        FROM meta_geographic
+        WHERE date_start >= '{date_cutoff}' {account_filter}
+        GROUP BY country
+        ORDER BY spend DESC
+        """
+        
+        geo_df = load_duckdb_data(duckdb_path, geo_query)
+        
+        if geo_df is not None and not geo_df.empty:
+            with col1:
+                st.markdown("**🗺️ Spend by Country**")
+                st.bar_chart(geo_df.set_index('country')['spend'].head(10))
+            
+            with col2:
+                st.markdown("**📊 Country Metrics**")
+                display_df = geo_df.copy()
+                display_df['spend'] = display_df['spend'].apply(lambda x: f"${x:,.2f}")
+                display_df['ctr'] = display_df['ctr'].apply(lambda x: f"{x:.2f}%")
+                display_df['cpc'] = display_df['cpc'].apply(lambda x: f"${x:.2f}")
+                display_df['cpi'] = display_df['cpi'].apply(lambda x: f"${x:.2f}" if x > 0 else "-")
+                display_df['clicks'] = display_df['clicks'].apply(lambda x: f"{int(x):,}")
+                display_df['app_installs'] = display_df['app_installs'].apply(lambda x: f"{int(x):,}" if x > 0 else "-")
+                
+                st.dataframe(
+                    display_df[['country', 'spend', 'clicks', 'ctr', 'cpc', 'app_installs', 'cpi']].head(10),
+                    use_container_width=True,
+                    hide_index=True
+                )
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 6: DEVICE & PLATFORM ANALYSIS
+    # ========================================
+    st.subheader("📱 Device & Platform Analysis")
+    
+    col1, col2 = st.columns(2)
+    
+    if 'meta_devices' in meta_tables:
+        device_query = f"""
+        SELECT 
+            device_platform,
+            publisher_platform,
+            SUM(impressions) as impressions,
+            SUM(clicks) as clicks,
+            SUM(spend) as spend,
+            CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 100.0 / SUM(impressions) ELSE 0 END as ctr,
+            CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
+            SUM(app_installs) as app_installs
+        FROM meta_devices
+        WHERE date_start >= '{date_cutoff}' {account_filter}
+        GROUP BY device_platform, publisher_platform
+        ORDER BY spend DESC
+        """
+        
+        device_df = load_duckdb_data(duckdb_path, device_query)
+        
+        if device_df is not None and not device_df.empty:
+            with col1:
+                st.markdown("**📲 Device Platform**")
+                device_agg = device_df.groupby('device_platform')['spend'].sum().reset_index()
+                st.bar_chart(device_agg.set_index('device_platform'))
+            
+            with col2:
+                st.markdown("**📡 Publisher Platform**")
+                pub_agg = device_df.groupby('publisher_platform')['spend'].sum().reset_index()
+                st.bar_chart(pub_agg.set_index('publisher_platform'))
+            
+            # Detailed table
+            st.markdown("**📊 Detailed Platform Metrics**")
+            display_df = device_df.copy()
+            display_df['spend'] = display_df['spend'].apply(lambda x: f"${x:,.2f}")
+            display_df['ctr'] = display_df['ctr'].apply(lambda x: f"{x:.2f}%")
+            display_df['cpc'] = display_df['cpc'].apply(lambda x: f"${x:.2f}")
+            display_df['impressions'] = display_df['impressions'].apply(lambda x: f"{int(x):,}")
+            display_df['clicks'] = display_df['clicks'].apply(lambda x: f"{int(x):,}")
+            
+            st.dataframe(
+                display_df[['device_platform', 'publisher_platform', 'spend', 'impressions', 'clicks', 'ctr', 'cpc']],
+                use_container_width=True,
+                hide_index=True
+            )
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 7: DEMOGRAPHICS ANALYSIS
+    # ========================================
+    st.subheader("👥 Demographics Analysis")
+    
+    if 'meta_demographics' in meta_tables:
+        demo_query = f"""
+        SELECT 
+            age,
+            gender,
+            SUM(impressions) as impressions,
+            SUM(clicks) as clicks,
+            SUM(spend) as spend,
+            CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 100.0 / SUM(impressions) ELSE 0 END as ctr,
+            CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
+            SUM(app_installs) as app_installs
+        FROM meta_demographics
+        WHERE date_start >= '{date_cutoff}' {account_filter}
+        GROUP BY age, gender
+        ORDER BY spend DESC
+        """
+        
+        demo_df = load_duckdb_data(duckdb_path, demo_query)
+        
+        if demo_df is not None and not demo_df.empty:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**👤 Spend by Age Group**")
+                age_agg = demo_df.groupby('age')['spend'].sum().reset_index()
+                # Sort by age properly
+                age_order = ['13-17', '18-24', '25-34', '35-44', '45-54', '55-64', '65+']
+                age_agg['age'] = pd.Categorical(age_agg['age'], categories=age_order, ordered=True)
+                age_agg = age_agg.sort_values('age')
+                st.bar_chart(age_agg.set_index('age'))
+            
+            with col2:
+                st.markdown("**⚧️ Spend by Gender**")
+                gender_agg = demo_df.groupby('gender')['spend'].sum().reset_index()
+                st.bar_chart(gender_agg.set_index('gender'))
+            
+            # Demographics heatmap-style table
+            st.markdown("**📊 Age x Gender Performance Matrix**")
+            
+            # Pivot for matrix view
+            matrix_df = demo_df.pivot_table(
+                index='age',
+                columns='gender',
+                values='spend',
+                aggfunc='sum'
+            ).fillna(0)
+            
+            if not matrix_df.empty:
+                # Format as currency
+                formatted_matrix = matrix_df.applymap(lambda x: f"${x:,.2f}")
+                st.dataframe(formatted_matrix, use_container_width=True)
+    
+    st.divider()
+    
+    # ========================================
+    # SECTION 8: RAW DATA EXPLORER
+    # ========================================
+    with st.expander("📋 Explore Raw Meta Ads Data"):
+        table_choice = st.selectbox(
+            "Select Table",
+            options=meta_tables,
+            key="meta_table_choice"
+        )
+        
+        if table_choice:
+            raw_df = load_duckdb_data(duckdb_path, f"SELECT * FROM {table_choice} ORDER BY date DESC LIMIT 1000")
+            if raw_df is not None:
+                st.dataframe(raw_df, use_container_width=True)
+    
+    # ========================================
+    # SECTION 9: MBA INSIGHTS & RECOMMENDATIONS
+    # ========================================
+    st.divider()
+    st.subheader("💡 Strategic Insights & Recommendations")
+    
+    if kpi_df is not None and not kpi_df.empty and kpi_df['spend'].iloc[0]:
+        row = kpi_df.iloc[0]
+        
+        insights = []
+        
+        # CTR analysis
+        ctr = row['ctr'] or 0
+        if ctr < 0.5:
+            insights.append("⚠️ **Low CTR Alert**: CTR is below 0.5%. Consider refreshing ad creatives or refining targeting.")
+        elif ctr > 1.5:
+            insights.append("✅ **Strong CTR**: CTR exceeds 1.5%, indicating good audience-creative fit.")
+        
+        # Frequency analysis
+        frequency = row['frequency'] or 0
+        if frequency > 3:
+            insights.append("⚠️ **High Frequency Warning**: Frequency > 3 may cause ad fatigue. Consider expanding audience or refreshing creatives.")
+        
+        # CPI analysis (if app installs)
+        cpi = row['cpi'] or 0
+        installs = row['app_installs'] or 0
+        if installs > 0:
+            if cpi > 5:
+                insights.append(f"⚠️ **CPI Optimization Needed**: Cost per install (${cpi:.2f}) is high. Review targeting and creatives.")
+            elif cpi < 2:
+                insights.append(f"✅ **Efficient CPI**: Cost per install (${cpi:.2f}) is efficient. Consider scaling budget.")
+        
+        # Budget efficiency
+        spend = row['spend'] or 0
+        clicks = row['clicks'] or 0
+        if spend > 0 and clicks > 0:
+            efficiency_ratio = clicks / spend
+            if efficiency_ratio < 0.5:
+                insights.append("📊 **Budget Efficiency**: Consider reallocating budget to higher-performing campaigns.")
+        
+        if insights:
+            for insight in insights:
+                st.markdown(insight)
+        else:
+            st.info("📊 Performance metrics are within normal ranges. Continue monitoring for trends.")
+
+
+# ============================================
 # Settings Page
 # ============================================
 def render_settings_page(ga4_config, gsc_config, gads_config, duckdb_path: str):
@@ -965,6 +1644,7 @@ def main():
     ga4_config, ga4_error = load_ga4_configuration()
     gsc_config, gsc_error = load_gsc_configuration()
     gads_config, gads_error = load_gads_configuration()
+    meta_config, meta_error = load_meta_configuration()
     
     # Determine DuckDB path
     if ga4_config:
@@ -973,6 +1653,8 @@ def main():
         duckdb_path = str(gsc_config.duckdb_path)
     elif gads_config:
         duckdb_path = str(gads_config.duckdb_path)
+    elif meta_config:
+        duckdb_path = str(meta_config.duckdb_path)
     else:
         duckdb_path = str(project_root / "data" / "warehouse.duckdb")
     
@@ -986,7 +1668,13 @@ def main():
         # Navigation
         page = st.radio(
             "Navigation",
-            options=["📊 GA4 Analytics", "🔍 Search Console (SEO)", "💰 Google Ads (PPC)", "⚙️ Settings"],
+            options=[
+                "📊 GA4 Analytics", 
+                "🔍 Search Console (SEO)", 
+                "💰 Google Ads (PPC)", 
+                "📘 Meta Ads",
+                "⚙️ Settings"
+            ],
             index=0
         )
         
@@ -999,6 +1687,7 @@ def main():
         ga4_rows = sum(v for k, v in table_info.items() if k.startswith('ga4_'))
         gsc_rows = sum(v for k, v in table_info.items() if k.startswith('gsc_'))
         gads_rows = sum(v for k, v in table_info.items() if k.startswith('gads_'))
+        meta_rows = sum(v for k, v in table_info.items() if k.startswith('meta_'))
         
         if ga4_rows > 0:
             st.success(f"GA4: {ga4_rows:,} rows")
@@ -1014,6 +1703,11 @@ def main():
             st.success(f"Google Ads: {gads_rows:,} rows")
         else:
             st.warning("Google Ads: No data")
+        
+        if meta_rows > 0:
+            st.success(f"Meta Ads: {meta_rows:,} rows")
+        else:
+            st.warning("Meta Ads: No data")
         
         st.divider()
         
@@ -1037,6 +1731,9 @@ def main():
     
     elif page == "💰 Google Ads (PPC)":
         render_gads_dashboard(gads_config, duckdb_path)
+    
+    elif page == "📘 Meta Ads":
+        render_meta_dashboard(meta_config, duckdb_path)
     
     elif page == "⚙️ Settings":
         render_settings_page(ga4_config, gsc_config, gads_config, duckdb_path)

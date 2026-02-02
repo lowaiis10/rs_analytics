@@ -2,9 +2,9 @@
 
 **Database:** DuckDB (Local Analytics Warehouse)  
 **Location:** `data/warehouse.duckdb`  
-**Total Tables:** 25 (6 GA4 + 10 GSC + 9 Google Ads)  
-**Total Rows:** 165,145+ (63,480 GA4 + 94,270 GSC + 7,395 Google Ads)  
-**Data Range:** GA4: 2020-2026 | GSC: 2024-09-16 to 2026-01-29 | Google Ads: 2020-2026
+**Total Tables:** 35 (6 GA4 + 10 GSC + 9 Google Ads + 10 Meta Ads)  
+**Total Rows:** 165,000+ (63,480 GA4 + 94,270 GSC + 7,395 Google Ads + 500+ Meta Ads)  
+**Data Range:** GA4: 2020-2026 | GSC: 2024-2026 | Google Ads: 2020-2026 | Meta Ads: Up to 37 months
 
 ---
 
@@ -14,16 +14,17 @@
 2. [GA4 Tables](#ga4-tables-google-analytics-4)
 3. [GSC Tables](#gsc-tables-google-search-console)
 4. [Google Ads Tables](#google-ads-tables)
-5. [Data Dictionary](#data-dictionary)
-6. [Query Examples](#query-examples)
-7. [ETL Process](#etl-process)
-8. [Performance Optimization](#performance-optimization)
+5. [Meta Ads Tables](#meta-ads-tables)
+6. [Data Dictionary](#data-dictionary)
+7. [Query Examples](#query-examples)
+8. [ETL Process](#etl-process)
+9. [Performance Optimization](#performance-optimization)
 
 ---
 
 ## Overview
 
-The database contains 25 tables organized by data source:
+The database contains 35 tables organized by data source:
 
 ### Summary by Data Source
 
@@ -31,7 +32,8 @@ The database contains 25 tables organized by data source:
 |--------|--------|------|-------------|
 | GA4 (Google Analytics 4) | 6 | 63,480+ | Website traffic, user behavior, conversions |
 | GSC (Google Search Console) | 10 | 94,270+ | Organic search, SEO keywords, rankings |
-| Google Ads | 9 | 7,395+ | Paid advertising, campaigns, keywords |
+| Google Ads | 9 | 7,395+ | Google paid advertising, campaigns, keywords |
+| Meta Ads | 10 | 500+ | Facebook/Instagram advertising, demographics |
 
 ---
 
@@ -286,23 +288,6 @@ All Google Ads tables share these core metrics:
 | `conversions_value` | DOUBLE | Conversion value |
 | `search_impression_share` | DOUBLE | Search impression share |
 
-### gads_ad_groups
-
-**Purpose:** Ad group-level performance metrics.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `date` | VARCHAR | Date |
-| `campaign_id` | BIGINT | Parent campaign ID |
-| `campaign_name` | VARCHAR | Parent campaign name |
-| `ad_group_id` | BIGINT | Ad group ID |
-| `ad_group_name` | VARCHAR | Ad group name |
-| `ad_group_status` | VARCHAR | Status |
-| `impressions` | BIGINT | Impressions |
-| `clicks` | BIGINT | Clicks |
-| `cost_micros` | BIGINT | Cost (micros) |
-| `conversions` | DOUBLE | Conversions |
-
 ### gads_keywords
 
 **Purpose:** Keyword-level performance metrics.
@@ -321,74 +306,238 @@ All Google Ads tables share these core metrics:
 | `conversions` | DOUBLE | Conversions |
 | `quality_score` | INTEGER | Quality score (1-10) |
 
-### gads_ads
+---
 
-**Purpose:** Individual ad creative performance.
+## Meta Ads Tables
+
+| Table Name | Rows | Purpose | ETL Source |
+|------------|------|---------|------------|
+| `meta_daily_account` | 41+ | Daily account-level metrics | `run_etl_meta.py` |
+| `meta_campaigns` | 15+ | Campaign metadata | `run_etl_meta.py` |
+| `meta_campaign_insights` | 140+ | Daily campaign performance | `run_etl_meta.py` |
+| `meta_adsets` | 15+ | Ad set (targeting) metadata | `run_etl_meta.py` |
+| `meta_adset_insights` | 140+ | Daily ad set performance | `run_etl_meta.py` |
+| `meta_ads` | 159+ | Individual ad metadata | `run_etl_meta.py` |
+| `meta_ad_insights` | varies | Daily ad-level performance | `run_etl_meta.py` |
+| `meta_geographic` | 3+ | Country-level breakdown | `run_etl_meta.py` |
+| `meta_devices` | 6+ | Device/platform breakdown | `run_etl_meta.py` |
+| `meta_demographics` | 18+ | Age/gender breakdown | `run_etl_meta.py` |
+
+### Common Meta Ads Metrics
+
+All Meta Ads insight tables share these core metrics:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `date` | VARCHAR | Date |
-| `campaign_id` | BIGINT | Campaign ID |
-| `ad_group_id` | BIGINT | Ad group ID |
-| `ad_id` | BIGINT | Ad ID |
-| `ad_type` | VARCHAR | Ad type |
+| `date` | DATE | Performance date |
+| `ad_account_id` | VARCHAR | Ad account ID (act_XXXX) |
+| `impressions` | BIGINT | Ad impressions |
+| `reach` | BIGINT | Unique people reached |
+| `clicks` | BIGINT | Ad clicks |
+| `spend` | DOUBLE | Amount spent (account currency) |
+| `ctr` | DOUBLE | Click-through rate (%) |
+| `cpc` | DOUBLE | Cost per click |
+| `cpm` | DOUBLE | Cost per 1000 impressions |
+| `frequency` | DOUBLE | Avg times each person saw the ad |
+| `app_installs` | BIGINT | Mobile app installs |
+| `purchases` | BIGINT | Purchase conversions |
+| `purchase_value` | DOUBLE | Revenue from purchases |
+
+### meta_daily_account
+
+**Purpose:** Daily account-level performance totals.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `date` | DATE | Date |
+| `ad_account_id` | VARCHAR | Ad account ID |
+| `impressions` | BIGINT | Total impressions |
+| `reach` | BIGINT | Unique reach |
+| `clicks` | BIGINT | Total clicks |
+| `unique_clicks` | BIGINT | Unique clicks |
+| `spend` | DOUBLE | Total spend |
+| `ctr` | DOUBLE | Click-through rate |
+| `cpc` | DOUBLE | Cost per click |
+| `cpm` | DOUBLE | Cost per mille |
+| `frequency` | DOUBLE | Average frequency |
+| `cost_per_unique_click` | DOUBLE | Cost per unique click |
+| `link_clicks` | BIGINT | Link clicks |
+| `page_engagement` | BIGINT | Page engagement |
+| `post_engagement` | BIGINT | Post engagement |
+| `app_installs` | BIGINT | App installs |
+| `purchases` | BIGINT | Purchases |
+| `leads` | BIGINT | Leads |
+| `purchase_value` | DOUBLE | Purchase value |
+| `video_p25` | BIGINT | Video 25% watched |
+| `video_p50` | BIGINT | Video 50% watched |
+| `video_p75` | BIGINT | Video 75% watched |
+| `video_p100` | BIGINT | Video 100% watched |
+| `extracted_at` | TIMESTAMP | ETL timestamp |
+
+### meta_campaigns
+
+**Purpose:** Campaign metadata and configuration.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `campaign_id` | VARCHAR | Campaign ID (PK) |
+| `ad_account_id` | VARCHAR | Ad account ID |
+| `campaign_name` | VARCHAR | Campaign name |
+| `status` | VARCHAR | Status (ACTIVE, PAUSED) |
+| `effective_status` | VARCHAR | Effective status |
+| `objective` | VARCHAR | Campaign objective |
+| `buying_type` | VARCHAR | Buying type |
+| `daily_budget` | DOUBLE | Daily budget |
+| `lifetime_budget` | DOUBLE | Lifetime budget |
+| `budget_remaining` | DOUBLE | Remaining budget |
+| `created_time` | TIMESTAMP | Creation time |
+| `start_time` | TIMESTAMP | Start time |
+| `stop_time` | TIMESTAMP | Stop time |
+| `extracted_at` | TIMESTAMP | ETL timestamp |
+
+### meta_campaign_insights
+
+**Purpose:** Daily campaign-level performance metrics.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `date` | DATE | Date (PK) |
+| `ad_account_id` | VARCHAR | Ad account ID |
+| `campaign_id` | VARCHAR | Campaign ID (PK) |
+| `campaign_name` | VARCHAR | Campaign name |
 | `impressions` | BIGINT | Impressions |
+| `reach` | BIGINT | Reach |
 | `clicks` | BIGINT | Clicks |
-| `cost_micros` | BIGINT | Cost (micros) |
-| `conversions` | DOUBLE | Conversions |
+| `unique_clicks` | BIGINT | Unique clicks |
+| `spend` | DOUBLE | Spend |
+| `ctr` | DOUBLE | CTR |
+| `cpc` | DOUBLE | CPC |
+| `cpm` | DOUBLE | CPM |
+| `frequency` | DOUBLE | Frequency |
+| `link_clicks` | BIGINT | Link clicks |
+| `app_installs` | BIGINT | App installs |
+| `purchases` | BIGINT | Purchases |
+| `leads` | BIGINT | Leads |
+| `purchase_value` | DOUBLE | Purchase value |
+| `extracted_at` | TIMESTAMP | ETL timestamp |
 
-### gads_devices
+### meta_adsets
 
-**Purpose:** Performance segmented by device type.
+**Purpose:** Ad set metadata with targeting information.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `date` | VARCHAR | Date |
-| `device` | VARCHAR | Device type (MOBILE, DESKTOP, TABLET) |
+| `adset_id` | VARCHAR | Ad set ID (PK) |
+| `ad_account_id` | VARCHAR | Ad account ID |
+| `campaign_id` | VARCHAR | Parent campaign ID |
+| `adset_name` | VARCHAR | Ad set name |
+| `status` | VARCHAR | Status |
+| `effective_status` | VARCHAR | Effective status |
+| `optimization_goal` | VARCHAR | Optimization goal |
+| `billing_event` | VARCHAR | Billing event |
+| `bid_strategy` | VARCHAR | Bid strategy |
+| `daily_budget` | DOUBLE | Daily budget |
+| `lifetime_budget` | DOUBLE | Lifetime budget |
+| `budget_remaining` | DOUBLE | Remaining budget |
+| `target_countries` | VARCHAR | Target countries (comma-separated) |
+| `created_time` | TIMESTAMP | Creation time |
+| `start_time` | TIMESTAMP | Start time |
+| `end_time` | TIMESTAMP | End time |
+| `extracted_at` | TIMESTAMP | ETL timestamp |
+
+### meta_adset_insights
+
+**Purpose:** Daily ad set-level performance metrics.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `date` | DATE | Date (PK) |
+| `ad_account_id` | VARCHAR | Ad account ID |
+| `campaign_id` | VARCHAR | Campaign ID |
+| `campaign_name` | VARCHAR | Campaign name |
+| `adset_id` | VARCHAR | Ad set ID (PK) |
+| `adset_name` | VARCHAR | Ad set name |
 | `impressions` | BIGINT | Impressions |
+| `reach` | BIGINT | Reach |
 | `clicks` | BIGINT | Clicks |
-| `cost_micros` | BIGINT | Cost (micros) |
-| `conversions` | DOUBLE | Conversions |
+| `unique_clicks` | BIGINT | Unique clicks |
+| `spend` | DOUBLE | Spend |
+| `ctr` | DOUBLE | CTR |
+| `cpc` | DOUBLE | CPC |
+| `cpm` | DOUBLE | CPM |
+| `frequency` | DOUBLE | Frequency |
+| `link_clicks` | BIGINT | Link clicks |
+| `app_installs` | BIGINT | App installs |
+| `purchases` | BIGINT | Purchases |
+| `leads` | BIGINT | Leads |
+| `purchase_value` | DOUBLE | Purchase value |
+| `extracted_at` | TIMESTAMP | ETL timestamp |
 
-### gads_geographic
+### meta_geographic
 
-**Purpose:** Geographic performance by country/region.
+**Purpose:** Performance breakdown by country.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `date` | VARCHAR | Date |
-| `country_criterion_id` | BIGINT | Country ID |
+| `date_start` | DATE | Period start (PK) |
+| `date_stop` | DATE | Period end |
+| `ad_account_id` | VARCHAR | Ad account ID (PK) |
+| `country` | VARCHAR | Country code (PK) |
 | `impressions` | BIGINT | Impressions |
+| `reach` | BIGINT | Reach |
 | `clicks` | BIGINT | Clicks |
-| `cost_micros` | BIGINT | Cost (micros) |
-| `conversions` | DOUBLE | Conversions |
+| `spend` | DOUBLE | Spend |
+| `ctr` | DOUBLE | CTR |
+| `cpc` | DOUBLE | CPC |
+| `cpm` | DOUBLE | CPM |
+| `app_installs` | BIGINT | App installs |
+| `purchases` | BIGINT | Purchases |
+| `purchase_value` | DOUBLE | Purchase value |
+| `extracted_at` | TIMESTAMP | ETL timestamp |
 
-### gads_hourly
+### meta_devices
 
-**Purpose:** Hour-by-hour performance for optimization.
+**Purpose:** Performance breakdown by device and publisher platform.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `date` | VARCHAR | Date |
-| `hour` | INTEGER | Hour of day (0-23) |
+| `date_start` | DATE | Period start (PK) |
+| `date_stop` | DATE | Period end |
+| `ad_account_id` | VARCHAR | Ad account ID (PK) |
+| `device_platform` | VARCHAR | Device (mobile, desktop) (PK) |
+| `publisher_platform` | VARCHAR | Platform (facebook, instagram, etc.) (PK) |
 | `impressions` | BIGINT | Impressions |
+| `reach` | BIGINT | Reach |
 | `clicks` | BIGINT | Clicks |
-| `cost_micros` | BIGINT | Cost (micros) |
-| `conversions` | DOUBLE | Conversions |
+| `spend` | DOUBLE | Spend |
+| `ctr` | DOUBLE | CTR |
+| `cpc` | DOUBLE | CPC |
+| `cpm` | DOUBLE | CPM |
+| `app_installs` | BIGINT | App installs |
+| `purchases` | BIGINT | Purchases |
+| `extracted_at` | TIMESTAMP | ETL timestamp |
 
-### gads_conversions
+### meta_demographics
 
-**Purpose:** Conversion action-level data.
+**Purpose:** Performance breakdown by age and gender.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `date` | VARCHAR | Date |
-| `conversion_action` | VARCHAR | Conversion action resource name |
-| `conversion_action_name` | VARCHAR | Conversion action name |
-| `conversion_action_category` | VARCHAR | Category |
-| `conversions` | DOUBLE | Conversions |
-| `conversions_value` | DOUBLE | Conversion value |
-| `all_conversions` | DOUBLE | All conversions |
+| `date_start` | DATE | Period start (PK) |
+| `date_stop` | DATE | Period end |
+| `ad_account_id` | VARCHAR | Ad account ID (PK) |
+| `age` | VARCHAR | Age bracket (18-24, 25-34, etc.) (PK) |
+| `gender` | VARCHAR | Gender (male, female, unknown) (PK) |
+| `impressions` | BIGINT | Impressions |
+| `reach` | BIGINT | Reach |
+| `clicks` | BIGINT | Clicks |
+| `spend` | DOUBLE | Spend |
+| `ctr` | DOUBLE | CTR |
+| `cpc` | DOUBLE | CPC |
+| `cpm` | DOUBLE | CPM |
+| `app_installs` | BIGINT | App installs |
+| `purchases` | BIGINT | Purchases |
+| `extracted_at` | TIMESTAMP | ETL timestamp |
 
 ---
 
@@ -396,7 +545,7 @@ All Google Ads tables share these core metrics:
 
 ### Cost Conversion
 
-Google Ads costs are stored in **micros** (1/1,000,000 of the currency unit):
+**Google Ads** costs are stored in **micros** (1/1,000,000 of the currency unit):
 
 ```sql
 -- Convert cost_micros to actual cost
@@ -408,14 +557,28 @@ SELECT
 FROM gads_campaigns;
 ```
 
+**Meta Ads** costs are stored in actual currency values (no conversion needed):
+
+```sql
+-- Meta costs are already in currency units
+SELECT 
+    campaign_name,
+    spend as cost,
+    clicks,
+    spend / NULLIF(clicks, 0) as actual_cpc
+FROM meta_campaign_insights;
+```
+
 ### Common Dimension Values
 
-| Dimension | Example Values |
-|-----------|----------------|
-| `device` / `deviceCategory` | MOBILE, DESKTOP, TABLET |
-| `campaign_status` | ENABLED, PAUSED, REMOVED |
-| `keyword_match_type` | BROAD, PHRASE, EXACT |
-| `advertising_channel_type` | SEARCH, DISPLAY, VIDEO, SHOPPING |
+| Dimension | Platform | Example Values |
+|-----------|----------|----------------|
+| `device` / `deviceCategory` | Google/GA4 | MOBILE, DESKTOP, TABLET |
+| `device_platform` | Meta | mobile, desktop |
+| `publisher_platform` | Meta | facebook, instagram, audience_network, messenger |
+| `campaign_status` / `status` | Both | ENABLED/ACTIVE, PAUSED, REMOVED |
+| `age` | Meta | 13-17, 18-24, 25-34, 35-44, 45-54, 55-64, 65+ |
+| `gender` | Meta | male, female, unknown |
 
 ---
 
@@ -423,25 +586,103 @@ FROM gads_campaigns;
 
 ### Cross-Platform Analysis
 
-**Total Marketing Spend vs Organic Traffic:**
+**Total Marketing Spend Comparison (All Platforms):**
 ```sql
--- Paid traffic (Google Ads)
+-- Google Ads spend
 SELECT 
-    'Paid (Google Ads)' as channel,
+    'Google Ads' as platform,
+    SUM(cost_micros) / 1000000.0 as total_spend,
     SUM(clicks) as total_clicks,
-    SUM(cost_micros) / 1000000.0 as total_cost,
     SUM(conversions) as conversions
 FROM gads_daily_summary
 
 UNION ALL
 
--- Organic traffic (Search Console)
+-- Meta Ads spend
 SELECT 
-    'Organic (SEO)' as channel,
+    'Meta Ads' as platform,
+    SUM(spend) as total_spend,
     SUM(clicks) as total_clicks,
-    0 as total_cost,  -- Organic is "free"
+    SUM(app_installs) as conversions
+FROM meta_daily_account
+
+UNION ALL
+
+-- Organic (SEO) - no cost
+SELECT 
+    'Organic (SEO)' as platform,
+    0 as total_spend,
+    SUM(clicks) as total_clicks,
     NULL as conversions
 FROM gsc_daily_totals;
+```
+
+### Meta Ads ROI Analysis
+
+**Campaign Performance with CPI:**
+```sql
+SELECT 
+    campaign_name,
+    SUM(impressions) as impressions,
+    SUM(clicks) as clicks,
+    SUM(spend) as spend,
+    SUM(app_installs) as installs,
+    CASE WHEN SUM(app_installs) > 0 
+         THEN SUM(spend) / SUM(app_installs) 
+         ELSE 0 
+    END as cost_per_install,
+    CASE WHEN SUM(impressions) > 0 
+         THEN SUM(clicks) * 100.0 / SUM(impressions) 
+         ELSE 0 
+    END as ctr_percent
+FROM meta_campaign_insights
+WHERE date >= CURRENT_DATE - INTERVAL '30 days'
+GROUP BY campaign_name
+ORDER BY spend DESC;
+```
+
+**Geographic Performance:**
+```sql
+SELECT 
+    country,
+    SUM(impressions) as impressions,
+    SUM(clicks) as clicks,
+    SUM(spend) as spend,
+    SUM(app_installs) as installs,
+    CASE WHEN SUM(app_installs) > 0 
+         THEN SUM(spend) / SUM(app_installs) 
+         ELSE 0 
+    END as cpi
+FROM meta_geographic
+GROUP BY country
+ORDER BY spend DESC;
+```
+
+**Demographics Matrix:**
+```sql
+SELECT 
+    age,
+    gender,
+    SUM(spend) as spend,
+    SUM(clicks) as clicks,
+    SUM(app_installs) as installs
+FROM meta_demographics
+GROUP BY age, gender
+ORDER BY age, gender;
+```
+
+**Platform Efficiency Comparison:**
+```sql
+SELECT 
+    device_platform,
+    publisher_platform,
+    SUM(spend) as spend,
+    SUM(clicks) as clicks,
+    CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
+    SUM(app_installs) as installs
+FROM meta_devices
+GROUP BY device_platform, publisher_platform
+ORDER BY spend DESC;
 ```
 
 ### Google Ads ROI Analysis
@@ -483,43 +724,6 @@ ORDER BY conversions DESC
 LIMIT 20;
 ```
 
-**Hourly Performance Heatmap:**
-```sql
-SELECT 
-    hour,
-    SUM(impressions) as impressions,
-    SUM(clicks) as clicks,
-    SUM(conversions) as conversions,
-    AVG(CASE WHEN impressions > 0 THEN clicks * 100.0 / impressions ELSE 0 END) as avg_ctr
-FROM gads_hourly
-GROUP BY hour
-ORDER BY hour;
-```
-
-### SEO vs SEM Keyword Comparison
-
-```sql
--- Keywords appearing in both organic and paid
-SELECT 
-    g.keyword_text,
-    g.clicks as paid_clicks,
-    g.cost_micros / 1000000.0 as paid_cost,
-    s.clicks as organic_clicks,
-    s.position as organic_position
-FROM (
-    SELECT keyword_text, SUM(clicks) as clicks, SUM(cost_micros) as cost_micros
-    FROM gads_keywords
-    GROUP BY keyword_text
-) g
-JOIN (
-    SELECT query, SUM(clicks) as clicks, AVG(position) as position
-    FROM gsc_queries
-    GROUP BY query
-) s ON LOWER(g.keyword_text) = LOWER(s.query)
-ORDER BY g.clicks DESC
-LIMIT 20;
-```
-
 ---
 
 ## ETL Process
@@ -531,15 +735,17 @@ LIMIT 20;
 | GA4 (basic) | `python scripts/run_etl.py` | Quick daily update |
 | GA4 (full) | `python scripts/run_etl_comprehensive.py --lifetime` | All metrics |
 | Search Console | `python scripts/run_etl_gsc.py --lifetime` | SEO data |
-| Google Ads | `python scripts/run_etl_gads.py --lifetime` | PPC data |
+| Google Ads | `python scripts/run_etl_gads.py --lifetime` | Google PPC data |
+| Meta Ads | `python scripts/run_etl_meta.py --lifetime` | Meta/Facebook PPC data |
 
 ### Data Freshness
 
-| Source | Delay | Recommended Update |
-|--------|-------|-------------------|
-| GA4 | 24-48 hours | Daily at 6 AM |
-| Search Console | 2-3 days | Daily at 6:30 AM |
-| Google Ads | Same day | Daily at 7 AM |
+| Source | Delay | Recommended Update | Max History |
+|--------|-------|-------------------|-------------|
+| GA4 | 24-48 hours | Daily at 6 AM | Unlimited |
+| Search Console | 2-3 days | Daily at 6:30 AM | 16 months |
+| Google Ads | Same day | Daily at 7 AM | Unlimited |
+| Meta Ads | Same day | Daily at 7:30 AM | 37 months |
 
 ---
 
@@ -559,11 +765,16 @@ CREATE INDEX idx_gsc_pages_page ON gsc_pages(page);
 
 -- GA4 indexes
 CREATE INDEX idx_ga4_traffic_date ON ga4_traffic_overview(date);
+
+-- Meta Ads indexes
+CREATE INDEX idx_meta_daily_date ON meta_daily_account(date);
+CREATE INDEX idx_meta_campaign_insights_date ON meta_campaign_insights(date);
+CREATE INDEX idx_meta_adset_insights_date ON meta_adset_insights(date);
 ```
 
 ### Storage
 
-Current database size: ~75-150 MB
+Current database size: ~75-200 MB
 
 To optimize:
 ```sql
@@ -599,6 +810,6 @@ cp data/backups/warehouse_20260130.duckdb data/warehouse.duckdb
 
 ---
 
-**Last Updated:** 2026-01-30  
-**Database Version:** 2.0  
+**Last Updated:** 2026-02-02  
+**Database Version:** 3.0 (Added Meta Ads)  
 **DuckDB Version:** 0.9.0+

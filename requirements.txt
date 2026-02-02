@@ -17,6 +17,9 @@ google-api-python-client>=2.0.0
 # Google Ads API
 google-ads>=29.0.0
 
+# Meta/Facebook Ads API
+facebook-business>=24.0.0
+
 # Local data warehouse
 duckdb>=0.9.0
 
