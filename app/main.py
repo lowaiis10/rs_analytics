@@ -38,6 +38,10 @@ import duckdb
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+# Import dashboard components
+from app.components.executive_dashboard import render_executive_dashboard
+from app.components.advanced_analytics import render_advanced_analytics_tab
+
 
 # ============================================
 # Page Configuration
@@ -110,6 +114,90 @@ def load_duckdb_data(duckdb_path: str, query: str) -> Optional[pd.DataFrame]:
         return df
     except Exception as e:
         return None
+
+
+@st.cache_resource
+def initialize_views(duckdb_path: str) -> bool:
+    """
+    Initialize silver/gold views in the database if they don't exist.
+    
+    Returns:
+        True if views were initialized successfully
+    """
+    views_sql_path = project_root / 'data' / 'views' / 'schema_views.sql'
+    
+    if not views_sql_path.exists():
+        return False
+    
+    try:
+        conn = duckdb.connect(duckdb_path)
+        
+        # Check if views already exist
+        existing_views = set()
+        try:
+            result = conn.execute("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_type = 'VIEW'
+            """).fetchall()
+            existing_views = {row[0] for row in result}
+        except:
+            pass
+        
+        # If we already have silver views, skip initialization
+        if 'ga4_sessions_v' in existing_views or 'gsc_daily_totals_v' in existing_views:
+            conn.close()
+            return True
+        
+        # Read and execute views SQL
+        with open(views_sql_path, 'r', encoding='utf-8') as f:
+            sql_content = f.read()
+        
+        # Split into individual statements and execute
+        # Remove comments
+        lines = []
+        for line in sql_content.split('\n'):
+            stripped = line.strip()
+            if not stripped.startswith('--'):
+                lines.append(line)
+        
+        content = '\n'.join(lines)
+        
+        # Find and execute CREATE VIEW statements
+        import re
+        view_pattern = re.compile(
+            r'CREATE\s+OR\s+REPLACE\s+VIEW\s+\w+\s+AS\s+SELECT.*?;',
+            re.IGNORECASE | re.DOTALL
+        )
+        
+        for match in view_pattern.finditer(content):
+            stmt = match.group(0)
+            try:
+                conn.execute(stmt)
+            except Exception as e:
+                # View creation failed, likely because source table doesn't exist
+                pass
+        
+        conn.close()
+        return True
+        
+    except Exception as e:
+        return False
+
+
+def check_views_exist(duckdb_path: str) -> bool:
+    """Check if silver views exist in the database."""
+    try:
+        conn = duckdb.connect(duckdb_path, read_only=True)
+        result = conn.execute("""
+            SELECT COUNT(*) 
+            FROM information_schema.tables 
+            WHERE table_type = 'VIEW' AND table_name LIKE '%_v'
+        """).fetchone()
+        conn.close()
+        return result[0] > 0 if result else False
+    except:
+        return False
 
 
 def get_table_info(duckdb_path: str) -> dict:
@@ -257,9 +345,20 @@ def load_twitter_configuration():
 # GA4 Dashboard Page
 # ============================================
 def render_ga4_dashboard(config, duckdb_path: str):
-    """Render the GA4 Analytics dashboard."""
+    """
+    Render the GA4 Business Intelligence Dashboard.
     
-    st.header("📊 Google Analytics 4 Dashboard")
+    This uses the new comprehensive GA4 BI dashboard with:
+        - Executive Summary (GA4-only KPIs)
+        - Acquisition Quality Analysis
+        - Landing Page Performance with Opportunity Scoring
+        - Funnel Health Visualization
+        - Behavior & Engagement Analysis
+        - User Segment Comparison
+        - Geo & Device Reality Check
+        - Trend Diagnostics
+        - Auto-generated "What Changed" Insights
+    """
     
     # Check if data exists
     table_info = get_table_info(duckdb_path)
@@ -281,134 +380,10 @@ def render_ga4_dashboard(config, duckdb_path: str):
         """)
         return
     
-    # Date range selector
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col1:
-        date_range = st.selectbox(
-            "Date Range",
-            options=["Last 7 days", "Last 14 days", "Last 30 days", "Last 90 days", "All time"],
-            index=2,
-            key="ga4_date_range"
-        )
+    # Import and render the new comprehensive GA4 dashboard
+    from app.components.ga4_analytics import render_ga4_bi_dashboard
     
-    # Calculate date filter
-    date_filters = {
-        "Last 7 days": "date >= CURRENT_DATE - INTERVAL '7 days'",
-        "Last 14 days": "date >= CURRENT_DATE - INTERVAL '14 days'",
-        "Last 30 days": "date >= CURRENT_DATE - INTERVAL '30 days'",
-        "Last 90 days": "date >= CURRENT_DATE - INTERVAL '90 days'",
-        "All time": "1=1"
-    }
-    date_filter = date_filters.get(date_range, "1=1")
-    
-    # Summary Metrics
-    st.subheader("Key Metrics")
-    
-    if 'ga4_sessions' in table_info:
-        summary_query = f"""
-        SELECT 
-            SUM(sessions) as total_sessions,
-            SUM(active_users) as total_users,
-            SUM(new_users) as total_new_users,
-            SUM(screen_page_views) as total_page_views,
-            AVG(engagement_rate) as avg_engagement_rate
-        FROM ga4_sessions
-        WHERE {date_filter}
-        """
-        
-        summary_df = load_duckdb_data(duckdb_path, summary_query)
-        
-        if summary_df is not None and not summary_df.empty:
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("Total Sessions", f"{int(summary_df['total_sessions'].iloc[0] or 0):,}")
-            with col2:
-                st.metric("Active Users", f"{int(summary_df['total_users'].iloc[0] or 0):,}")
-            with col3:
-                st.metric("Page Views", f"{int(summary_df['total_page_views'].iloc[0] or 0):,}")
-            with col4:
-                engagement = summary_df['avg_engagement_rate'].iloc[0] or 0
-                st.metric("Avg Engagement", f"{engagement:.1%}")
-    
-    st.divider()
-    
-    # Sessions Over Time
-    st.subheader("Sessions Over Time")
-    
-    if 'ga4_sessions' in table_info:
-        time_query = f"""
-        SELECT 
-            date,
-            SUM(sessions) as sessions,
-            SUM(active_users) as active_users
-        FROM ga4_sessions
-        WHERE {date_filter}
-        GROUP BY date
-        ORDER BY date
-        """
-        
-        time_df = load_duckdb_data(duckdb_path, time_query)
-        
-        if time_df is not None and not time_df.empty:
-            st.line_chart(time_df.set_index('date')[['sessions', 'active_users']])
-    
-    # Traffic Sources and Devices
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Top Traffic Sources")
-        
-        if 'ga4_sessions' in table_info:
-            source_query = f"""
-            SELECT 
-                session_source as source,
-                SUM(sessions) as sessions
-            FROM ga4_sessions
-            WHERE {date_filter} AND session_source IS NOT NULL AND session_source != '(direct)'
-            GROUP BY session_source
-            ORDER BY sessions DESC
-            LIMIT 10
-            """
-            
-            source_df = load_duckdb_data(duckdb_path, source_query)
-            
-            if source_df is not None and not source_df.empty:
-                st.bar_chart(source_df.set_index('source'))
-    
-    with col2:
-        st.subheader("Device Categories")
-        
-        if 'ga4_sessions' in table_info:
-            device_query = f"""
-            SELECT 
-                device_category,
-                SUM(sessions) as sessions
-            FROM ga4_sessions
-            WHERE {date_filter} AND device_category IS NOT NULL
-            GROUP BY device_category
-            ORDER BY sessions DESC
-            """
-            
-            device_df = load_duckdb_data(duckdb_path, device_query)
-            
-            if device_df is not None and not device_df.empty:
-                st.bar_chart(device_df.set_index('device_category'))
-    
-    # Raw Data
-    with st.expander("📋 View Raw GA4 Data"):
-        table_choice = st.selectbox(
-            "Select Table",
-            options=ga4_tables,
-            key="ga4_table_choice"
-        )
-        
-        if table_choice:
-            raw_query = f"SELECT * FROM {table_choice} LIMIT 1000"
-            raw_df = load_duckdb_data(duckdb_path, raw_query)
-            
-            if raw_df is not None:
-                st.dataframe(raw_df, use_container_width=True)
+    render_ga4_bi_dashboard(duckdb_path)
 
 
 # ============================================
@@ -444,19 +419,19 @@ def render_gsc_dashboard(gsc_config, duckdb_path: str):
     # Show available data summary
     st.success(f"GSC data loaded: {total_rows:,} total rows across {len(gsc_tables)} tables")
     
-    # Date range filter
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col1:
-        date_range = st.selectbox(
-            "Date Range",
-            options=["Last 7 days", "Last 14 days", "Last 30 days", "Last 90 days", "All time"],
-            index=2,
-            key="gsc_date_range"
-        )
+    # Import date picker component
+    from app.components.date_picker import render_date_range_picker
     
-    days_map = {"Last 7 days": 7, "Last 14 days": 14, "Last 30 days": 30, "Last 90 days": 90, "All time": 9999}
-    days = days_map.get(date_range, 30)
-    date_cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    # Date range filter using calendar picker
+    start_date, end_date, _, _ = render_date_range_picker(
+        key="gsc_dashboard",
+        default_days=30,
+        max_days=365,
+        show_comparison=False
+    )
+    
+    # Convert to string for SQL
+    date_cutoff = start_date.strftime('%Y-%m-%d')
     
     st.divider()
     
@@ -466,12 +441,12 @@ def render_gsc_dashboard(gsc_config, duckdb_path: str):
     if 'gsc_daily_totals' in gsc_tables:
         totals_query = f"""
         SELECT 
-            SUM(CAST(clicks AS INTEGER)) as total_clicks,
-            SUM(CAST(impressions AS INTEGER)) as total_impressions,
-            AVG(CAST(ctr AS DOUBLE)) as avg_ctr,
-            AVG(CAST(position AS DOUBLE)) as avg_position
-        FROM gsc_daily_totals
-        WHERE date >= '{date_cutoff}'
+            SUM(clicks) as total_clicks,
+            SUM(impressions) as total_impressions,
+            AVG(ctr) as avg_ctr,
+            AVG(avg_position) as avg_position
+        FROM gsc_daily_totals_v
+        WHERE date_day >= '{date_cutoff}'
         """
         
         totals_df = load_duckdb_data(duckdb_path, totals_query)
@@ -495,8 +470,8 @@ def render_gsc_dashboard(gsc_config, duckdb_path: str):
     
     if 'gsc_daily_totals' in gsc_tables:
         time_query = f"""
-        SELECT date, CAST(clicks AS INTEGER) as clicks, CAST(impressions AS INTEGER) as impressions
-        FROM gsc_daily_totals WHERE date >= '{date_cutoff}' ORDER BY date
+        SELECT date_day as date, clicks, impressions
+        FROM gsc_daily_totals_v WHERE date_day >= '{date_cutoff}' ORDER BY date_day
         """
         time_df = load_duckdb_data(duckdb_path, time_query)
         if time_df is not None and not time_df.empty:
@@ -511,8 +486,8 @@ def render_gsc_dashboard(gsc_config, duckdb_path: str):
         st.subheader("🔑 Top Search Queries")
         if 'gsc_queries' in gsc_tables:
             queries_query = f"""
-            SELECT query, SUM(CAST(clicks AS INTEGER)) as clicks, SUM(CAST(impressions AS INTEGER)) as impressions
-            FROM gsc_queries WHERE date >= '{date_cutoff}' AND query IS NOT NULL
+            SELECT query, SUM(clicks) as clicks, SUM(impressions) as impressions
+            FROM gsc_queries_v WHERE date_day >= '{date_cutoff}' AND query IS NOT NULL
             GROUP BY query ORDER BY clicks DESC LIMIT 15
             """
             queries_df = load_duckdb_data(duckdb_path, queries_query)
@@ -523,8 +498,8 @@ def render_gsc_dashboard(gsc_config, duckdb_path: str):
         st.subheader("📄 Top Pages")
         if 'gsc_pages' in gsc_tables:
             pages_query = f"""
-            SELECT page, SUM(CAST(clicks AS INTEGER)) as clicks, SUM(CAST(impressions AS INTEGER)) as impressions
-            FROM gsc_pages WHERE date >= '{date_cutoff}' AND page IS NOT NULL
+            SELECT page, SUM(clicks) as clicks, SUM(impressions) as impressions
+            FROM gsc_pages_v WHERE date_day >= '{date_cutoff}' AND page IS NOT NULL
             GROUP BY page ORDER BY clicks DESC LIMIT 15
             """
             pages_df = load_duckdb_data(duckdb_path, pages_query)
@@ -575,19 +550,19 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
     # Show available data summary
     st.success(f"Google Ads data loaded: {total_rows:,} total rows across {len(gads_tables)} tables")
     
-    # Date range filter
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col1:
-        date_range = st.selectbox(
-            "Date Range",
-            options=["Last 7 days", "Last 14 days", "Last 30 days", "Last 90 days", "All time"],
-            index=2,
-            key="gads_date_range"
-        )
+    # Import date picker component
+    from app.components.date_picker import render_date_range_picker
     
-    days_map = {"Last 7 days": 7, "Last 14 days": 14, "Last 30 days": 30, "Last 90 days": 90, "All time": 9999}
-    days = days_map.get(date_range, 30)
-    date_cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    # Date range filter using calendar picker
+    start_date, end_date, _, _ = render_date_range_picker(
+        key="gads_dashboard",
+        default_days=30,
+        max_days=365,
+        show_comparison=False
+    )
+    
+    # Convert to string for SQL
+    date_cutoff = start_date.strftime('%Y-%m-%d')
     
     st.divider()
     
@@ -605,8 +580,8 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
             AVG(ctr) as avg_ctr,
             SUM(conversions) as total_conversions,
             SUM(conversions_value) as total_conversion_value
-        FROM gads_daily_summary
-        WHERE date >= '{date_cutoff}'
+        FROM gads_daily_summary_v
+        WHERE date_day >= '{date_cutoff}'
         """
         
         summary_df = load_duckdb_data(duckdb_path, summary_query)
@@ -648,14 +623,14 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
     if 'gads_daily_summary' in gads_tables:
         time_query = f"""
         SELECT 
-            date,
+            date_day as date,
             SUM(clicks) as clicks,
             SUM(cost) as cost,
             SUM(conversions) as conversions
-        FROM gads_daily_summary
-        WHERE date >= '{date_cutoff}'
-        GROUP BY date
-        ORDER BY date
+        FROM gads_daily_summary_v
+        WHERE date_day >= '{date_cutoff}'
+        GROUP BY date_day
+        ORDER BY date_day
         """
         
         time_df = load_duckdb_data(duckdb_path, time_query)
@@ -675,23 +650,31 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
     st.divider()
     
     # ========================================
-    # Campaign Performance
+    # Campaign Performance with Efficiency Metrics
     # ========================================
-    st.subheader("🎯 Campaign Performance")
+    st.subheader("🎯 Campaign Performance & Efficiency")
     
     if 'gads_campaigns' in gads_tables:
+        # Enhanced query with all efficiency metrics
         campaigns_query = f"""
         SELECT 
             campaign_name,
+            campaign_type,
             campaign_status,
             SUM(impressions) as impressions,
             SUM(clicks) as clicks,
             SUM(cost) as cost,
             AVG(ctr) as ctr,
-            SUM(conversions) as conversions
-        FROM gads_campaigns
-        WHERE date >= '{date_cutoff}' AND campaign_name IS NOT NULL
-        GROUP BY campaign_name, campaign_status
+            SUM(conversions) as conversions,
+            SUM(conversions_value) as conversions_value,
+            -- Calculated efficiency metrics
+            CASE WHEN SUM(clicks) > 0 THEN SUM(conversions) / SUM(clicks) ELSE 0 END as conv_rate,
+            CASE WHEN SUM(conversions) > 0 THEN SUM(cost) / SUM(conversions) ELSE NULL END as cpa,
+            CASE WHEN SUM(clicks) > 0 THEN SUM(cost) / SUM(clicks) ELSE 0 END as cpc,
+            CASE WHEN SUM(cost) > 0 THEN SUM(conversions_value) / SUM(cost) ELSE 0 END as roas
+        FROM gads_campaigns_v
+        WHERE date_day >= '{date_cutoff}' AND campaign_name IS NOT NULL
+        GROUP BY campaign_name, campaign_type, campaign_status
         ORDER BY cost DESC
         LIMIT 20
         """
@@ -699,17 +682,175 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
         campaigns_df = load_duckdb_data(duckdb_path, campaigns_query)
         
         if campaigns_df is not None and not campaigns_df.empty:
+            # Calculate efficiency score (0-100)
+            # Factors: Conversion Rate (30%), CTR (20%), ROAS (30%), CPA relative to avg (20%)
+            avg_cpa = campaigns_df[campaigns_df['cpa'].notna() & (campaigns_df['cpa'] > 0)]['cpa'].mean() if any(campaigns_df['cpa'].notna() & (campaigns_df['cpa'] > 0)) else 1
+            avg_conv_rate = campaigns_df['conv_rate'].mean() if campaigns_df['conv_rate'].mean() > 0 else 0.01
+            avg_ctr = campaigns_df['ctr'].mean() if campaigns_df['ctr'].mean() > 0 else 0.01
+            avg_roas = campaigns_df['roas'].mean() if campaigns_df['roas'].mean() > 0 else 1
+            
+            def calc_efficiency_score(row):
+                """Calculate composite efficiency score (0-100)."""
+                score = 0
+                
+                # Conversion Rate score (30 points max)
+                # Normalized against average, capped at 2x average for max score
+                if avg_conv_rate > 0:
+                    conv_ratio = min(row['conv_rate'] / avg_conv_rate, 2.0)
+                    score += conv_ratio * 15  # Max 30 points
+                
+                # CTR score (20 points max)
+                if avg_ctr > 0:
+                    ctr_ratio = min(row['ctr'] / avg_ctr, 2.0) if row['ctr'] else 0
+                    score += ctr_ratio * 10  # Max 20 points
+                
+                # ROAS score (30 points max)
+                if avg_roas > 0:
+                    roas_ratio = min(row['roas'] / avg_roas, 2.0) if row['roas'] else 0
+                    score += roas_ratio * 15  # Max 30 points
+                
+                # CPA score (20 points max) - lower is better
+                if row['cpa'] and row['cpa'] > 0 and avg_cpa > 0:
+                    cpa_ratio = min(avg_cpa / row['cpa'], 2.0)  # Inverted - lower CPA is better
+                    score += cpa_ratio * 10  # Max 20 points
+                
+                return min(round(score), 100)
+            
+            campaigns_df['efficiency_score'] = campaigns_df.apply(calc_efficiency_score, axis=1)
+            
+            # Grade based on score
+            def get_grade(score):
+                if score >= 80: return "A"
+                elif score >= 60: return "B"
+                elif score >= 40: return "C"
+                elif score >= 20: return "D"
+                else: return "F"
+            
+            campaigns_df['grade'] = campaigns_df['efficiency_score'].apply(get_grade)
+            
+            # Display KPI summary cards
+            kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns(5)
+            
+            total_cost = campaigns_df['cost'].sum()
+            total_conversions = campaigns_df['conversions'].sum()
+            total_revenue = campaigns_df['conversions_value'].sum()
+            overall_cpa = total_cost / total_conversions if total_conversions > 0 else 0
+            overall_roas = total_revenue / total_cost if total_cost > 0 else 0
+            
+            with kpi_col1:
+                st.metric("Total Spend", f"${total_cost:,.2f}")
+            with kpi_col2:
+                st.metric("Conversions", f"{total_conversions:,.1f}")
+            with kpi_col3:
+                st.metric("Avg CPA", f"${overall_cpa:,.2f}" if overall_cpa else "N/A")
+            with kpi_col4:
+                st.metric("Overall ROAS", f"{overall_roas:.2f}x" if overall_roas else "N/A")
+            with kpi_col5:
+                avg_efficiency = campaigns_df['efficiency_score'].mean()
+                st.metric("Avg Efficiency", f"{avg_efficiency:.0f}/100")
+            
+            st.markdown("---")
+            
             # Format for display
             display_df = campaigns_df.copy()
-            display_df['cost'] = display_df['cost'].apply(lambda x: f"${x:,.2f}" if x else "$0.00")
-            display_df['ctr'] = display_df['ctr'].apply(lambda x: f"{x:.2%}" if x else "0%")
-            display_df['conversions'] = display_df['conversions'].apply(lambda x: f"{x:.1f}" if x else "0")
+            
+            # Format campaign_type to be more readable
+            campaign_type_map = {
+                'SEARCH': 'Search',
+                'PERFORMANCE_MAX': 'PMax',
+                'DISPLAY': 'Display',
+                'VIDEO': 'Video',
+                'SHOPPING': 'Shopping',
+                'SMART': 'Smart',
+                'LOCAL': 'Local',
+                'DISCOVERY': 'Discovery',
+                'DEMAND_GEN': 'Demand Gen',
+                'APP': 'App',
+                'HOTEL': 'Hotel',
+                'LOCAL_SERVICES': 'Local Svc',
+                'MULTI_CHANNEL': 'Multi-Ch',
+            }
+            display_df['campaign_type'] = display_df['campaign_type'].apply(
+                lambda x: campaign_type_map.get(x, x.replace('_', ' ').title() if x else 'Unknown') if x else 'Unknown'
+            )
+            
+            display_df = display_df.rename(columns={
+                'campaign_name': 'Campaign',
+                'campaign_type': 'Type',
+                'campaign_status': 'Status',
+                'impressions': 'Impr.',
+                'clicks': 'Clicks',
+                'cost': 'Cost',
+                'ctr': 'CTR',
+                'conversions': 'Conv.',
+                'conv_rate': 'Conv Rate',
+                'cpa': 'CPA',
+                'cpc': 'CPC',
+                'roas': 'ROAS',
+                'efficiency_score': 'Score',
+                'grade': 'Grade'
+            })
+            
+            # Format columns for display
+            display_df['Cost'] = display_df['Cost'].apply(lambda x: f"${x:,.2f}" if x else "$0.00")
+            display_df['CTR'] = display_df['CTR'].apply(lambda x: f"{x:.2%}" if x else "0%")
+            display_df['Conv.'] = display_df['Conv.'].apply(lambda x: f"{x:.1f}" if x else "0")
+            display_df['Conv Rate'] = display_df['Conv Rate'].apply(lambda x: f"{x:.2%}" if x else "0%")
+            display_df['CPA'] = display_df['CPA'].apply(lambda x: f"${x:,.2f}" if x and x > 0 else "—")
+            display_df['CPC'] = display_df['CPC'].apply(lambda x: f"${x:.2f}" if x else "$0.00")
+            display_df['ROAS'] = display_df['ROAS'].apply(lambda x: f"{x:.2f}x" if x else "0x")
+            
+            # Drop intermediate columns
+            display_df = display_df.drop(columns=['conversions_value'], errors='ignore')
+            
+            # Reorder columns for better readability
+            column_order = ['Campaign', 'Type', 'Status', 'Cost', 'Clicks', 'Conv.', 'Conv Rate', 'CPA', 'ROAS', 'CTR', 'CPC', 'Score', 'Grade']
+            display_df = display_df[[c for c in column_order if c in display_df.columns]]
+            
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
-            # Campaign cost chart
-            chart_df = campaigns_df[['campaign_name', 'clicks', 'conversions']].copy()
+            # Efficiency insights
+            st.markdown("#### 💡 Campaign Insights")
+            
+            insights_col1, insights_col2 = st.columns(2)
+            
+            with insights_col1:
+                # Top performers
+                top_campaigns = campaigns_df.nlargest(3, 'efficiency_score')
+                st.markdown("**🏆 Top Performers:**")
+                for _, row in top_campaigns.iterrows():
+                    roas_str = f"ROAS {row['roas']:.2f}x" if row['roas'] else ""
+                    conv_str = f"Conv Rate {row['conv_rate']:.1%}" if row['conv_rate'] else ""
+                    st.success(f"**{row['campaign_name'][:30]}...** - Score: {row['efficiency_score']} ({row['grade']}) | {conv_str} | {roas_str}")
+            
+            with insights_col2:
+                # Needs attention (campaigns with spend but low efficiency)
+                needs_attention = campaigns_df[
+                    (campaigns_df['cost'] > campaigns_df['cost'].quantile(0.25)) & 
+                    (campaigns_df['efficiency_score'] < 40)
+                ].nsmallest(3, 'efficiency_score')
+                
+                if not needs_attention.empty:
+                    st.markdown("**⚠️ Needs Attention:**")
+                    for _, row in needs_attention.iterrows():
+                        issue = []
+                        if row['conv_rate'] < avg_conv_rate * 0.5:
+                            issue.append("low conv rate")
+                        if row['cpa'] and row['cpa'] > avg_cpa * 1.5:
+                            issue.append("high CPA")
+                        if row['roas'] < avg_roas * 0.5:
+                            issue.append("low ROAS")
+                        issues_str = ", ".join(issue) if issue else "underperforming"
+                        st.warning(f"**{row['campaign_name'][:30]}...** - Score: {row['efficiency_score']} | Issues: {issues_str}")
+                else:
+                    st.info("All campaigns are performing adequately!")
+            
+            # Campaign performance chart
+            st.markdown("#### 📊 Campaign Performance Comparison")
+            chart_df = campaigns_df[['campaign_name', 'clicks', 'conversions', 'efficiency_score']].copy()
+            chart_df['campaign_name'] = chart_df['campaign_name'].str[:25] + '...'
             chart_df = chart_df.set_index('campaign_name')
-            st.bar_chart(chart_df)
+            st.bar_chart(chart_df[['clicks', 'conversions']])
     
     st.divider()
     
@@ -729,9 +870,13 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
                 SUM(impressions) as impressions,
                 SUM(clicks) as clicks,
                 SUM(cost) as cost,
-                SUM(conversions) as conversions
-            FROM gads_keywords
-            WHERE date >= '{date_cutoff}' AND keyword_text IS NOT NULL
+                SUM(conversions) as conversions,
+                SUM(conversions_value) as conversions_value,
+                CASE WHEN SUM(clicks) > 0 THEN SUM(conversions) / SUM(clicks) ELSE 0 END as conv_rate,
+                CASE WHEN SUM(conversions) > 0 THEN SUM(cost) / SUM(conversions) ELSE NULL END as cpa,
+                CASE WHEN SUM(cost) > 0 THEN SUM(conversions_value) / SUM(cost) ELSE 0 END as roas
+            FROM gads_keywords_v
+            WHERE date_day >= '{date_cutoff}' AND keyword_text IS NOT NULL
             GROUP BY keyword_text, keyword_match_type
             ORDER BY cost DESC
             LIMIT 15
@@ -742,6 +887,17 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
             if keywords_df is not None and not keywords_df.empty:
                 display_df = keywords_df.copy()
                 display_df['cost'] = display_df['cost'].apply(lambda x: f"${x:,.2f}" if x else "$0.00")
+                display_df['conv_rate'] = display_df['conv_rate'].apply(lambda x: f"{x:.1%}" if x else "0%")
+                display_df['cpa'] = display_df['cpa'].apply(lambda x: f"${x:.2f}" if x and x > 0 else "—")
+                display_df['roas'] = display_df['roas'].apply(lambda x: f"{x:.2f}x" if x else "—")
+                display_df = display_df.drop(columns=['conversions_value'], errors='ignore')
+                display_df = display_df.rename(columns={
+                    'keyword_text': 'Keyword',
+                    'keyword_match_type': 'Match',
+                    'conv_rate': 'Conv%',
+                    'cpa': 'CPA',
+                    'roas': 'ROAS'
+                })
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
     
     with col2:
@@ -755,9 +911,13 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
                 SUM(clicks) as clicks,
                 SUM(cost) as cost,
                 AVG(ctr) as ctr,
-                SUM(conversions) as conversions
-            FROM gads_devices
-            WHERE date >= '{date_cutoff}' AND device IS NOT NULL
+                SUM(conversions) as conversions,
+                SUM(conversions_value) as conversions_value,
+                CASE WHEN SUM(clicks) > 0 THEN SUM(conversions) / SUM(clicks) ELSE 0 END as conv_rate,
+                CASE WHEN SUM(conversions) > 0 THEN SUM(cost) / SUM(conversions) ELSE NULL END as cpa,
+                CASE WHEN SUM(cost) > 0 THEN SUM(conversions_value) / SUM(cost) ELSE 0 END as roas
+            FROM gads_devices_v
+            WHERE date_day >= '{date_cutoff}' AND device IS NOT NULL
             GROUP BY device
             ORDER BY cost DESC
             """
@@ -768,16 +928,26 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
                 # Device chart
                 st.bar_chart(devices_df.set_index('device')[['clicks', 'conversions']])
                 
-                # Detailed table
+                # Detailed table with efficiency metrics
                 display_df = devices_df.copy()
                 display_df['cost'] = display_df['cost'].apply(lambda x: f"${x:,.2f}" if x else "$0.00")
                 display_df['ctr'] = display_df['ctr'].apply(lambda x: f"{x:.2%}" if x else "0%")
+                display_df['conv_rate'] = display_df['conv_rate'].apply(lambda x: f"{x:.1%}" if x else "0%")
+                display_df['cpa'] = display_df['cpa'].apply(lambda x: f"${x:.2f}" if x and x > 0 else "—")
+                display_df['roas'] = display_df['roas'].apply(lambda x: f"{x:.2f}x" if x else "—")
+                display_df = display_df.drop(columns=['conversions_value'], errors='ignore')
+                display_df = display_df.rename(columns={
+                    'device': 'Device',
+                    'conv_rate': 'Conv%',
+                    'cpa': 'CPA',
+                    'roas': 'ROAS'
+                })
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
     
     st.divider()
     
     # ========================================
-    # Ad Group Performance
+    # Ad Group Performance with Efficiency
     # ========================================
     st.subheader("📂 Ad Group Performance")
     
@@ -790,9 +960,13 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
             SUM(impressions) as impressions,
             SUM(clicks) as clicks,
             SUM(cost) as cost,
-            SUM(conversions) as conversions
-        FROM gads_ad_groups
-        WHERE date >= '{date_cutoff}' AND ad_group_name IS NOT NULL
+            SUM(conversions) as conversions,
+            SUM(conversions_value) as conversions_value,
+            CASE WHEN SUM(clicks) > 0 THEN SUM(conversions) / SUM(clicks) ELSE 0 END as conv_rate,
+            CASE WHEN SUM(conversions) > 0 THEN SUM(cost) / SUM(conversions) ELSE NULL END as cpa,
+            CASE WHEN SUM(cost) > 0 THEN SUM(conversions_value) / SUM(cost) ELSE 0 END as roas
+        FROM gads_ad_groups_v
+        WHERE date_day >= '{date_cutoff}' AND ad_group_name IS NOT NULL
         GROUP BY campaign_name, ad_group_name, ad_group_status
         ORDER BY cost DESC
         LIMIT 20
@@ -803,6 +977,18 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
         if ad_groups_df is not None and not ad_groups_df.empty:
             display_df = ad_groups_df.copy()
             display_df['cost'] = display_df['cost'].apply(lambda x: f"${x:,.2f}" if x else "$0.00")
+            display_df['conv_rate'] = display_df['conv_rate'].apply(lambda x: f"{x:.1%}" if x else "0%")
+            display_df['cpa'] = display_df['cpa'].apply(lambda x: f"${x:.2f}" if x and x > 0 else "—")
+            display_df['roas'] = display_df['roas'].apply(lambda x: f"{x:.2f}x" if x else "—")
+            display_df = display_df.drop(columns=['conversions_value'], errors='ignore')
+            display_df = display_df.rename(columns={
+                'campaign_name': 'Campaign',
+                'ad_group_name': 'Ad Group',
+                'ad_group_status': 'Status',
+                'conv_rate': 'Conv%',
+                'cpa': 'CPA',
+                'roas': 'ROAS'
+            })
             st.dataframe(display_df, use_container_width=True, hide_index=True)
     
     st.divider()
@@ -812,6 +998,61 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
     # ========================================
     st.subheader("🌍 Geographic Performance")
     
+    # Google Ads Country Criterion ID to Country Name mapping
+    # These are the most common geo target IDs used in Google Ads
+    GADS_COUNTRY_MAP = {
+        2004: "Afghanistan", 2008: "Albania", 2012: "Algeria", 2020: "Andorra",
+        2024: "Angola", 2028: "Antigua and Barbuda", 2032: "Argentina", 2051: "Armenia",
+        2036: "Australia", 2040: "Austria", 2031: "Azerbaijan", 2044: "Bahamas",
+        2048: "Bahrain", 2050: "Bangladesh", 2052: "Barbados", 2112: "Belarus",
+        2056: "Belgium", 2084: "Belize", 2204: "Benin", 2064: "Bhutan",
+        2068: "Bolivia", 2070: "Bosnia and Herzegovina", 2072: "Botswana", 2076: "Brazil",
+        2096: "Brunei", 2100: "Bulgaria", 2854: "Burkina Faso", 2108: "Burundi",
+        2116: "Cambodia", 2120: "Cameroon", 2124: "Canada", 2132: "Cape Verde",
+        2140: "Central African Republic", 2148: "Chad", 2152: "Chile", 2156: "China",
+        2170: "Colombia", 2174: "Comoros", 2178: "Congo", 2180: "DR Congo",
+        2188: "Costa Rica", 2384: "Ivory Coast", 2191: "Croatia", 2192: "Cuba",
+        2196: "Cyprus", 2203: "Czech Republic", 2208: "Denmark", 2262: "Djibouti",
+        2212: "Dominica", 2214: "Dominican Republic", 2218: "Ecuador", 2818: "Egypt",
+        2222: "El Salvador", 2226: "Equatorial Guinea", 2232: "Eritrea", 2233: "Estonia",
+        2231: "Ethiopia", 2242: "Fiji", 2246: "Finland", 2250: "France",
+        2266: "Gabon", 2270: "Gambia", 2268: "Georgia", 2276: "Germany",
+        2288: "Ghana", 2300: "Greece", 2308: "Grenada", 2320: "Guatemala",
+        2324: "Guinea", 2624: "Guinea-Bissau", 2328: "Guyana", 2332: "Haiti",
+        2340: "Honduras", 2344: "Hong Kong", 2348: "Hungary", 2352: "Iceland",
+        2356: "India", 2360: "Indonesia", 2364: "Iran", 2368: "Iraq",
+        2372: "Ireland", 2376: "Israel", 2380: "Italy", 2388: "Jamaica",
+        2392: "Japan", 2400: "Jordan", 2398: "Kazakhstan", 2404: "Kenya",
+        2296: "Kiribati", 2408: "North Korea", 2410: "South Korea", 2414: "Kuwait",
+        2417: "Kyrgyzstan", 2418: "Laos", 2428: "Latvia", 2422: "Lebanon",
+        2426: "Lesotho", 2430: "Liberia", 2434: "Libya", 2438: "Liechtenstein",
+        2440: "Lithuania", 2442: "Luxembourg", 2446: "Macau", 2807: "North Macedonia",
+        2450: "Madagascar", 2454: "Malawi", 2458: "Malaysia", 2462: "Maldives",
+        2466: "Mali", 2470: "Malta", 2584: "Marshall Islands", 2478: "Mauritania",
+        2480: "Mauritius", 2484: "Mexico", 2583: "Micronesia", 2498: "Moldova",
+        2492: "Monaco", 2496: "Mongolia", 2499: "Montenegro", 2504: "Morocco",
+        2508: "Mozambique", 2104: "Myanmar", 2516: "Namibia", 2520: "Nauru",
+        2524: "Nepal", 2528: "Netherlands", 2554: "New Zealand", 2558: "Nicaragua",
+        2562: "Niger", 2566: "Nigeria", 2578: "Norway", 2512: "Oman",
+        2586: "Pakistan", 2585: "Palau", 2275: "Palestine", 2591: "Panama",
+        2598: "Papua New Guinea", 2600: "Paraguay", 2604: "Peru", 2608: "Philippines",
+        2616: "Poland", 2620: "Portugal", 2634: "Qatar", 2642: "Romania",
+        2643: "Russia", 2646: "Rwanda", 2659: "Saint Kitts and Nevis",
+        2662: "Saint Lucia", 2670: "Saint Vincent", 2882: "Samoa", 2674: "San Marino",
+        2678: "Sao Tome and Principe", 2682: "Saudi Arabia", 2686: "Senegal",
+        2688: "Serbia", 2690: "Seychelles", 2694: "Sierra Leone", 2702: "Singapore",
+        2703: "Slovakia", 2705: "Slovenia", 2090: "Solomon Islands", 2706: "Somalia",
+        2710: "South Africa", 2724: "Spain", 2144: "Sri Lanka", 2736: "Sudan",
+        2740: "Suriname", 2748: "Eswatini", 2752: "Sweden", 2756: "Switzerland",
+        2760: "Syria", 2158: "Taiwan", 2762: "Tajikistan", 2834: "Tanzania",
+        2764: "Thailand", 2626: "Timor-Leste", 2768: "Togo", 2776: "Tonga",
+        2780: "Trinidad and Tobago", 2788: "Tunisia", 2792: "Turkey", 2795: "Turkmenistan",
+        2798: "Tuvalu", 2800: "Uganda", 2804: "Ukraine", 2784: "UAE",
+        2826: "United Kingdom", 2840: "United States", 2858: "Uruguay", 2860: "Uzbekistan",
+        2548: "Vanuatu", 2336: "Vatican City", 2862: "Venezuela", 2704: "Vietnam",
+        2887: "Yemen", 2894: "Zambia", 2716: "Zimbabwe"
+    }
+    
     if 'gads_geographic' in gads_tables:
         geo_query = f"""
         SELECT 
@@ -820,17 +1061,118 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
             SUM(clicks) as clicks,
             SUM(cost) as cost,
             SUM(conversions) as conversions
-        FROM gads_geographic
-        WHERE date >= '{date_cutoff}' AND country_criterion_id IS NOT NULL
+        FROM gads_geographic_v
+        WHERE date_day >= '{date_cutoff}' AND country_criterion_id IS NOT NULL
         GROUP BY country_criterion_id
-        ORDER BY cost DESC
+        ORDER BY clicks DESC
         LIMIT 15
         """
         
         geo_df = load_duckdb_data(duckdb_path, geo_query)
         
         if geo_df is not None and not geo_df.empty:
-            st.bar_chart(geo_df.set_index('country_criterion_id')['clicks'])
+            import plotly.express as px
+            
+            # Map criterion IDs to country names
+            geo_df['country'] = geo_df['country_criterion_id'].apply(
+                lambda x: GADS_COUNTRY_MAP.get(int(x), f"Unknown ({x})") if pd.notna(x) else "Unknown"
+            )
+            
+            # Create two columns for visualizations
+            geo_col1, geo_col2 = st.columns(2)
+            
+            with geo_col1:
+                # Choropleth world map
+                fig_map = px.choropleth(
+                    geo_df,
+                    locations="country",
+                    locationmode="country names",
+                    color="clicks",
+                    hover_name="country",
+                    hover_data={
+                        "clicks": ":,",
+                        "impressions": ":,",
+                        "cost": "$.2f",
+                        "conversions": ":,.1f",
+                        "country_criterion_id": False
+                    },
+                    color_continuous_scale="Blues",
+                    title="Clicks by Country"
+                )
+                
+                fig_map.update_layout(
+                    geo=dict(
+                        showframe=False,
+                        showcoastlines=True,
+                        projection_type='natural earth'
+                    ),
+                    margin=dict(l=0, r=0, t=40, b=0),
+                    height=350
+                )
+                
+                st.plotly_chart(fig_map, use_container_width=True)
+            
+            with geo_col2:
+                # Pie chart for top countries
+                top_countries = geo_df.head(8).copy()
+                other_clicks = geo_df.iloc[8:]['clicks'].sum() if len(geo_df) > 8 else 0
+                
+                if other_clicks > 0:
+                    other_row = pd.DataFrame([{
+                        'country': 'Others',
+                        'clicks': other_clicks,
+                        'impressions': 0,
+                        'cost': 0,
+                        'conversions': 0
+                    }])
+                    top_countries = pd.concat([top_countries, other_row], ignore_index=True)
+                
+                fig_pie = px.pie(
+                    top_countries,
+                    values='clicks',
+                    names='country',
+                    title='Clicks Distribution by Country',
+                    hole=0.4,
+                    color_discrete_sequence=px.colors.qualitative.Set2
+                )
+                
+                fig_pie.update_layout(
+                    margin=dict(l=0, r=0, t=40, b=0),
+                    height=350,
+                    showlegend=True,
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5)
+                )
+                
+                fig_pie.update_traces(
+                    textposition='inside',
+                    textinfo='percent+label',
+                    hovertemplate='<b>%{label}</b><br>Clicks: %{value:,}<extra></extra>'
+                )
+                
+                st.plotly_chart(fig_pie, use_container_width=True)
+            
+            # Data table with country names
+            st.caption("**Top Countries by Performance**")
+            display_df = geo_df[['country', 'clicks', 'impressions', 'cost', 'conversions']].copy()
+            display_df['cost'] = display_df['cost'].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "$0.00")
+            display_df['clicks'] = display_df['clicks'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+            display_df['impressions'] = display_df['impressions'].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "0")
+            display_df['conversions'] = display_df['conversions'].apply(lambda x: f"{x:,.1f}" if pd.notna(x) else "0")
+            
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "country": "Country",
+                    "clicks": "Clicks",
+                    "impressions": "Impressions",
+                    "cost": "Cost",
+                    "conversions": "Conversions"
+                }
+            )
+    else:
+        st.info("No geographic data available. Run Google Ads ETL to populate.")
     
     # ========================================
     # Hourly Performance
@@ -840,15 +1182,15 @@ def render_gads_dashboard(gads_config, duckdb_path: str):
     if 'gads_hourly' in gads_tables:
         hourly_query = f"""
         SELECT 
-            hour,
+            hour_of_day as hour,
             SUM(impressions) as impressions,
             SUM(clicks) as clicks,
             SUM(cost) as cost,
             SUM(conversions) as conversions
-        FROM gads_hourly
-        WHERE date >= '{date_cutoff}' AND hour IS NOT NULL
-        GROUP BY hour
-        ORDER BY hour
+        FROM gads_hourly_v
+        WHERE date_day >= '{date_cutoff}' AND hour_of_day IS NOT NULL
+        GROUP BY hour_of_day
+        ORDER BY hour_of_day
         """
         
         hourly_df = load_duckdb_data(duckdb_path, hourly_query)
@@ -919,37 +1261,33 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
     # ========================================
     # Date Range Filter
     # ========================================
-    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
     
-    with col1:
-        date_range = st.selectbox(
-            "📅 Analysis Period",
-            options=["Last 7 days", "Last 14 days", "Last 30 days", "Last 90 days", "Last 180 days", "All time"],
-            index=2,
-            key="meta_date_range"
-        )
+    # Import date picker component
+    from app.components.date_picker import render_date_range_picker
     
-    # Calculate date filter
-    days_map = {
-        "Last 7 days": 7, "Last 14 days": 14, "Last 30 days": 30,
-        "Last 90 days": 90, "Last 180 days": 180, "All time": 9999
-    }
-    days = days_map.get(date_range, 30)
-    date_cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-    prev_date_cutoff = (datetime.now() - timedelta(days=days*2)).strftime('%Y-%m-%d')
+    # Date range filter using calendar picker
+    start_date, end_date, prev_start_date, prev_end_date = render_date_range_picker(
+        key="meta_dashboard",
+        default_days=30,
+        max_days=365,
+        show_comparison=True
+    )
+    
+    # Convert to strings for SQL
+    date_cutoff = start_date.strftime('%Y-%m-%d')
+    prev_date_cutoff = prev_start_date.strftime('%Y-%m-%d') if prev_start_date else date_cutoff
     
     # Get account selector if multiple accounts
-    with col2:
-        accounts_query = "SELECT DISTINCT ad_account_id FROM meta_daily_account"
-        accounts_df = load_duckdb_data(duckdb_path, accounts_query)
-        
-        if accounts_df is not None and len(accounts_df) > 1:
-            account_options = ["All Accounts"] + accounts_df['ad_account_id'].tolist()
-            selected_account = st.selectbox("Account", account_options, key="meta_account")
-            account_filter = "" if selected_account == "All Accounts" else f"AND ad_account_id = '{selected_account}'"
-        else:
-            selected_account = "All Accounts"
-            account_filter = ""
+    accounts_query = "SELECT DISTINCT account_id as ad_account_id FROM meta_daily_account_v"
+    accounts_df = load_duckdb_data(duckdb_path, accounts_query)
+    
+    if accounts_df is not None and len(accounts_df) > 1:
+        account_options = ["All Accounts"] + accounts_df['ad_account_id'].tolist()
+        selected_account = st.selectbox("📋 Select Account", account_options, key="meta_account")
+        account_filter = "" if selected_account == "All Accounts" else f"AND ad_account_id = '{selected_account}'"
+    else:
+        selected_account = "All Accounts"
+        account_filter = ""
     
     st.divider()
     
@@ -958,7 +1296,7 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
     # ========================================
     st.subheader("🎯 Executive Summary")
     
-    # Current period metrics
+    # Current period metrics (using silver view)
     kpi_query = f"""
     SELECT 
         SUM(impressions) as impressions,
@@ -971,21 +1309,21 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
         CASE WHEN SUM(reach) > 0 THEN SUM(impressions) * 1.0 / SUM(reach) ELSE 0 END as frequency,
         SUM(app_installs) as app_installs,
         SUM(purchases) as purchases,
-        SUM(purchase_value) as revenue,
+        SUM(revenue) as revenue,
         CASE WHEN SUM(app_installs) > 0 THEN SUM(spend) / SUM(app_installs) ELSE 0 END as cpi
-    FROM meta_daily_account
-    WHERE date >= '{date_cutoff}' {account_filter}
+    FROM meta_daily_account_v
+    WHERE date_day >= '{date_cutoff}' {account_filter.replace('ad_account_id', 'account_id')}
     """
     
-    # Previous period metrics for comparison
+    # Previous period metrics for comparison (using silver view)
     prev_kpi_query = f"""
     SELECT 
         SUM(impressions) as impressions,
         SUM(spend) as spend,
         SUM(clicks) as clicks,
         SUM(app_installs) as app_installs
-    FROM meta_daily_account
-    WHERE date >= '{prev_date_cutoff}' AND date < '{date_cutoff}' {account_filter}
+    FROM meta_daily_account_v
+    WHERE date_day >= '{prev_date_cutoff}' AND date_day < '{date_cutoff}' {account_filter.replace('ad_account_id', 'account_id')}
     """
     
     kpi_df = load_duckdb_data(duckdb_path, kpi_query)
@@ -1087,17 +1425,17 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
     
     trend_query = f"""
     SELECT 
-        date,
+        date_day as date,
         SUM(impressions) as impressions,
         SUM(clicks) as clicks,
         SUM(spend) as spend,
         SUM(app_installs) as app_installs,
         CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 100.0 / SUM(impressions) ELSE 0 END as ctr,
         CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc
-    FROM meta_daily_account
-    WHERE date >= '{date_cutoff}' {account_filter}
-    GROUP BY date
-    ORDER BY date
+    FROM meta_daily_account_v
+    WHERE date_day >= '{date_cutoff}' {account_filter.replace('ad_account_id', 'account_id')}
+    GROUP BY date_day
+    ORDER BY date_day
     """
     
     trend_df = load_duckdb_data(duckdb_path, trend_query)
@@ -1153,9 +1491,9 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
             SUM(app_installs) as app_installs,
             CASE WHEN SUM(app_installs) > 0 THEN SUM(spend) / SUM(app_installs) ELSE 0 END as cpi,
             SUM(purchases) as purchases,
-            SUM(purchase_value) as revenue
-        FROM meta_campaign_insights
-        WHERE date >= '{date_cutoff}' {account_filter}
+            SUM(revenue) as revenue
+        FROM meta_campaign_insights_v
+        WHERE date_day >= '{date_cutoff}' {account_filter.replace('ad_account_id', 'account_id')}
         GROUP BY campaign_name, campaign_id
         ORDER BY spend DESC
         """
@@ -1206,14 +1544,14 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
         
         campaign_trend_query = f"""
         SELECT 
-            date,
+            date_day as date,
             campaign_name,
             SUM(spend) as spend,
             SUM(clicks) as clicks
-        FROM meta_campaign_insights
-        WHERE date >= '{date_cutoff}' {account_filter}
-        GROUP BY date, campaign_name
-        ORDER BY date
+        FROM meta_campaign_insights_v
+        WHERE date_day >= '{date_cutoff}' {account_filter.replace('ad_account_id', 'account_id')}
+        GROUP BY date_day, campaign_name
+        ORDER BY date_day
         """
         
         campaign_trend_df = load_duckdb_data(duckdb_path, campaign_trend_query)
@@ -1240,7 +1578,7 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
     if 'meta_adset_insights' in meta_tables:
         adset_query = f"""
         SELECT 
-            adset_name,
+            ad_group_name as adset_name,
             campaign_name,
             SUM(impressions) as impressions,
             SUM(clicks) as clicks,
@@ -1249,9 +1587,9 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
             CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
             SUM(app_installs) as app_installs,
             CASE WHEN SUM(app_installs) > 0 THEN SUM(spend) / SUM(app_installs) ELSE 0 END as cpi
-        FROM meta_adset_insights
-        WHERE date >= '{date_cutoff}' {account_filter}
-        GROUP BY adset_name, campaign_name
+        FROM meta_adset_insights_v
+        WHERE date_day >= '{date_cutoff}' {account_filter.replace('ad_account_id', 'account_id')}
+        GROUP BY ad_group_name, campaign_name
         ORDER BY spend DESC
         LIMIT 20
         """
@@ -1292,11 +1630,9 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
     # ========================================
     st.subheader("🌍 Geographic Performance")
     
-    col1, col2 = st.columns(2)
-    
     if 'meta_geographic' in meta_tables:
         # Note: Geographic data is aggregated (not daily), so no date filter needed
-        geo_where = f"WHERE 1=1 {account_filter}" if account_filter else ""
+        geo_where = f"WHERE 1=1 {account_filter.replace('ad_account_id', 'account_id')}" if account_filter else ""
         geo_query = f"""
         SELECT 
             country,
@@ -1307,7 +1643,7 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
             CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
             SUM(app_installs) as app_installs,
             CASE WHEN SUM(app_installs) > 0 THEN SUM(spend) / SUM(app_installs) ELSE 0 END as cpi
-        FROM meta_geographic
+        FROM meta_geographic_v
         {geo_where}
         GROUP BY country
         ORDER BY spend DESC
@@ -1316,25 +1652,109 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
         geo_df = load_duckdb_data(duckdb_path, geo_query)
         
         if geo_df is not None and not geo_df.empty:
-            with col1:
-                st.markdown("**🗺️ Spend by Country**")
-                st.bar_chart(geo_df.set_index('country')['spend'].head(10))
+            import plotly.express as px
             
-            with col2:
-                st.markdown("**📊 Country Metrics**")
-                display_df = geo_df.copy()
-                display_df['spend'] = display_df['spend'].apply(lambda x: f"${x:,.2f}")
-                display_df['ctr'] = display_df['ctr'].apply(lambda x: f"{x:.2f}%")
-                display_df['cpc'] = display_df['cpc'].apply(lambda x: f"${x:.2f}")
-                display_df['cpi'] = display_df['cpi'].apply(lambda x: f"${x:.2f}" if x > 0 else "-")
-                display_df['clicks'] = display_df['clicks'].apply(lambda x: f"{int(x):,}")
-                display_df['app_installs'] = display_df['app_installs'].apply(lambda x: f"{int(x):,}" if x > 0 else "-")
-                
-                st.dataframe(
-                    display_df[['country', 'spend', 'clicks', 'ctr', 'cpc', 'app_installs', 'cpi']].head(10),
-                    use_container_width=True,
-                    hide_index=True
+            geo_col1, geo_col2 = st.columns(2)
+            
+            with geo_col1:
+                # Choropleth world map
+                fig_map = px.choropleth(
+                    geo_df,
+                    locations="country",
+                    locationmode="country names",
+                    color="spend",
+                    hover_name="country",
+                    hover_data={
+                        "spend": "$.2f",
+                        "clicks": ":,",
+                        "app_installs": ":,",
+                        "ctr": ":.2f"
+                    },
+                    color_continuous_scale="Purples",
+                    title="Ad Spend by Country"
                 )
+                
+                fig_map.update_layout(
+                    geo=dict(
+                        showframe=False,
+                        showcoastlines=True,
+                        projection_type='natural earth'
+                    ),
+                    margin=dict(l=0, r=0, t=40, b=0),
+                    height=350,
+                    coloraxis_colorbar=dict(title="Spend ($)")
+                )
+                
+                st.plotly_chart(fig_map, use_container_width=True)
+            
+            with geo_col2:
+                # Pie chart for top countries by spend
+                top_countries = geo_df.head(8).copy()
+                other_spend = geo_df.iloc[8:]['spend'].sum() if len(geo_df) > 8 else 0
+                
+                if other_spend > 0:
+                    other_row = pd.DataFrame([{
+                        'country': 'Others',
+                        'spend': other_spend,
+                        'clicks': 0,
+                        'impressions': 0,
+                        'app_installs': 0,
+                        'ctr': 0,
+                        'cpc': 0,
+                        'cpi': 0
+                    }])
+                    top_countries = pd.concat([top_countries, other_row], ignore_index=True)
+                
+                fig_pie = px.pie(
+                    top_countries,
+                    values='spend',
+                    names='country',
+                    title='Spend Distribution by Country',
+                    hole=0.4,
+                    color_discrete_sequence=px.colors.qualitative.Pastel
+                )
+                
+                fig_pie.update_layout(
+                    margin=dict(l=0, r=0, t=40, b=0),
+                    height=350,
+                    showlegend=True,
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5)
+                )
+                
+                fig_pie.update_traces(
+                    textposition='inside',
+                    textinfo='percent+label',
+                    hovertemplate='<b>%{label}</b><br>Spend: $%{value:,.2f}<extra></extra>'
+                )
+                
+                st.plotly_chart(fig_pie, use_container_width=True)
+            
+            # Data table with metrics
+            st.caption("**Country Performance Metrics**")
+            display_df = geo_df.copy()
+            display_df['spend'] = display_df['spend'].apply(lambda x: f"${x:,.2f}")
+            display_df['ctr'] = display_df['ctr'].apply(lambda x: f"{x:.2f}%")
+            display_df['cpc'] = display_df['cpc'].apply(lambda x: f"${x:.2f}")
+            display_df['cpi'] = display_df['cpi'].apply(lambda x: f"${x:.2f}" if x > 0 else "-")
+            display_df['clicks'] = display_df['clicks'].apply(lambda x: f"{int(x):,}")
+            display_df['app_installs'] = display_df['app_installs'].apply(lambda x: f"{int(x):,}" if x > 0 else "-")
+            
+            st.dataframe(
+                display_df[['country', 'spend', 'clicks', 'ctr', 'cpc', 'app_installs', 'cpi']].head(15),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "country": "Country",
+                    "spend": "Spend",
+                    "clicks": "Clicks",
+                    "ctr": "CTR",
+                    "cpc": "CPC",
+                    "app_installs": "Installs",
+                    "cpi": "CPI"
+                }
+            )
+    else:
+        st.info("No geographic data available. Run Meta Ads ETL to populate.")
     
     st.divider()
     
@@ -1347,7 +1767,7 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
     
     if 'meta_devices' in meta_tables:
         # Note: Device data is aggregated (not daily), so no date filter needed
-        device_where = f"WHERE 1=1 {account_filter}" if account_filter else ""
+        device_where = f"WHERE 1=1 {account_filter.replace('ad_account_id', 'account_id')}" if account_filter else ""
         device_query = f"""
         SELECT 
             device_platform,
@@ -1358,7 +1778,7 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
             CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 100.0 / SUM(impressions) ELSE 0 END as ctr,
             CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
             SUM(app_installs) as app_installs
-        FROM meta_devices
+        FROM meta_devices_v
         {device_where}
         GROUP BY device_platform, publisher_platform
         ORDER BY spend DESC
@@ -1401,7 +1821,7 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
     
     if 'meta_demographics' in meta_tables:
         # Note: Demographics data is aggregated (not daily), so no date filter needed
-        demo_where = f"WHERE 1=1 {account_filter}" if account_filter else ""
+        demo_where = f"WHERE 1=1 {account_filter.replace('ad_account_id', 'account_id')}" if account_filter else ""
         demo_query = f"""
         SELECT 
             age,
@@ -1412,7 +1832,7 @@ def render_meta_dashboard(meta_config, duckdb_path: str):
             CASE WHEN SUM(impressions) > 0 THEN SUM(clicks) * 100.0 / SUM(impressions) ELSE 0 END as ctr,
             CASE WHEN SUM(clicks) > 0 THEN SUM(spend) / SUM(clicks) ELSE 0 END as cpc,
             SUM(app_installs) as app_installs
-        FROM meta_demographics
+        FROM meta_demographics_v
         {demo_where}
         GROUP BY age, gender
         ORDER BY spend DESC
@@ -1569,25 +1989,19 @@ def render_twitter_dashboard(twitter_config, duckdb_path: str):
             """)
         return
     
-    # Date filter
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        date_range = st.selectbox(
-            "Time Period",
-            options=["Last 7 Days", "Last 14 Days", "Last 30 Days", "All Time"],
-            index=2,
-            key="twitter_date_range"
-        )
+    # Import date picker component
+    from app.components.date_picker import render_date_range_picker
     
-    # Calculate date cutoff
-    if date_range == "Last 7 Days":
-        date_cutoff = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-    elif date_range == "Last 14 Days":
-        date_cutoff = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
-    elif date_range == "Last 30 Days":
-        date_cutoff = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-    else:
-        date_cutoff = "2020-01-01"
+    # Date range filter using calendar picker
+    start_date, end_date, _, _ = render_date_range_picker(
+        key="twitter_dashboard",
+        default_days=30,
+        max_days=365,
+        show_comparison=False
+    )
+    
+    # Convert to string for SQL
+    date_cutoff = start_date.strftime('%Y-%m-%d')
     
     # ========================================
     # SECTION 1: PROFILE OVERVIEW
@@ -2376,6 +2790,8 @@ def main():
         page = st.radio(
             "Navigation",
             options=[
+                "📈 Executive Dashboard",
+                "🔬 Advanced Analytics",
                 "📊 GA4 Analytics", 
                 "🔍 Search Console (SEO)", 
                 "💰 Google Ads (PPC)", 
@@ -2433,7 +2849,13 @@ def main():
             st.rerun()
     
     # Main Content
-    if page == "📊 GA4 Analytics":
+    if page == "📈 Executive Dashboard":
+        render_executive_dashboard(duckdb_path)
+    
+    elif page == "🔬 Advanced Analytics":
+        render_advanced_analytics_tab(duckdb_path)
+    
+    elif page == "📊 GA4 Analytics":
         if ga4_config:
             render_ga4_dashboard(ga4_config, duckdb_path)
         else:

@@ -558,24 +558,32 @@ class MetaExtractor:
         """
         Extract daily ad-level insights.
         
+        This method tries multiple approaches to get ad-level data:
+        1. First attempts account-level insights with ad breakdown
+        2. Falls back to individual ad queries if needed
+        
         Returns:
             DataFrame with daily ad metrics
         """
         logger.info(f"Extracting ad insights for {self.ad_account_id}")
         
         date_range = self._get_date_range(days, start_date, end_date, lifetime)
+        logger.info(f"Date range: {date_range}")
+        
+        data = []
         
         try:
+            # First attempt: Use account-level insights with ad-level granularity
+            logger.info("Attempting account-level ad insights extraction...")
             insights = self.account.get_insights(
                 fields=['ad_id', 'ad_name', 'adset_id', 'adset_name', 'campaign_id', 'campaign_name'] + self.STANDARD_METRICS,
                 params={
                     'time_range': date_range,
-                    'time_increment': 1,
+                    'time_increment': 1,  # Daily granularity
                     'level': 'ad'
                 }
             )
             
-            data = []
             for row in insights:
                 record = {
                     'date': row.get('date_start'),
@@ -601,13 +609,82 @@ class MetaExtractor:
                 }
                 data.append(record)
             
-            df = pd.DataFrame(data)
-            logger.info(f"Extracted {len(df)} ad insight records")
-            return df
+            logger.info(f"Account-level extraction returned {len(data)} ad insight records")
             
         except Exception as e:
-            logger.error(f"Error extracting ad insights: {e}")
-            return pd.DataFrame()
+            logger.warning(f"Account-level ad insights failed: {e}")
+            logger.info("Trying individual ad insights extraction...")
+        
+        # If no data from account-level, try querying individual ads
+        if not data:
+            try:
+                # Get all ads first
+                ads_df = self.extract_ads()
+                if not ads_df.empty:
+                    logger.info(f"Found {len(ads_df)} ads, extracting insights for each...")
+                    
+                    for _, ad_row in ads_df.iterrows():
+                        ad_id = ad_row.get('ad_id')
+                        if not ad_id:
+                            continue
+                            
+                        try:
+                            ad = Ad(ad_id)
+                            ad_insights = ad.get_insights(
+                                fields=self.STANDARD_METRICS,
+                                params={
+                                    'time_range': date_range,
+                                    'time_increment': 1
+                                }
+                            )
+                            
+                            for row in ad_insights:
+                                record = {
+                                    'date': row.get('date_start'),
+                                    'ad_account_id': self.ad_account_id,
+                                    'campaign_id': ad_row.get('campaign_id'),
+                                    'campaign_name': '',  # Not available at ad level
+                                    'adset_id': ad_row.get('adset_id'),
+                                    'adset_name': '',  # Not available at ad level
+                                    'ad_id': ad_id,
+                                    'ad_name': ad_row.get('ad_name', ''),
+                                    'impressions': int(row.get('impressions', 0)),
+                                    'reach': int(row.get('reach', 0)),
+                                    'clicks': int(row.get('clicks', 0)),
+                                    'spend': float(row.get('spend', 0)),
+                                    'ctr': float(row.get('ctr', 0)),
+                                    'cpc': float(row.get('cpc', 0)),
+                                    'cpm': float(row.get('cpm', 0)),
+                                    'link_clicks': self._parse_actions(row.get('actions'), 'link_click'),
+                                    'app_installs': self._parse_actions(row.get('actions'), 'app_install'),
+                                    'purchases': self._parse_actions(row.get('actions'), 'purchase'),
+                                    'purchase_value': self._parse_action_values(row.get('action_values'), 'purchase'),
+                                    'extracted_at': datetime.now().isoformat()
+                                }
+                                data.append(record)
+                                
+                        except Exception as ad_e:
+                            logger.debug(f"Could not get insights for ad {ad_id}: {ad_e}")
+                            continue
+                    
+                    logger.info(f"Individual ad extraction returned {len(data)} records")
+                else:
+                    logger.warning("No ads found in account")
+                    
+            except Exception as e:
+                logger.error(f"Individual ad insights extraction failed: {e}")
+        
+        df = pd.DataFrame(data)
+        
+        if df.empty:
+            logger.warning("No ad insights data extracted. This may be because:")
+            logger.warning("  1. No ads have been active in the date range")
+            logger.warning("  2. Ad-level reporting is not available for this account")
+            logger.warning("  3. The ads have no impressions/spend in this period")
+        else:
+            logger.info(f"Extracted {len(df)} ad insight records total")
+            
+        return df
     
     def extract_geographic_insights(self, days: int = None,
                                     start_date: str = None,

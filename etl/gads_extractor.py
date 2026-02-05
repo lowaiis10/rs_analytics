@@ -27,6 +27,19 @@ from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 
 
+def _get_extracted_at() -> str:
+    """Get current timestamp for extracted_at field."""
+    return datetime.now().isoformat()
+
+
+def _add_extracted_at(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Add extracted_at timestamp to all records."""
+    timestamp = _get_extracted_at()
+    for record in records:
+        record['extracted_at'] = timestamp
+    return records
+
+
 class GAdsExtractor:
     """
     Google Ads data extractor with comprehensive metric support.
@@ -551,6 +564,8 @@ class GAdsExtractor:
                 data = extract_method(start_date, end_date)
                 
                 if data:
+                    # Add extracted_at timestamp to all records
+                    data = _add_extracted_at(data)
                     all_data[dataset_name] = data
                     self.logger.info(f"Successfully extracted {len(data)} rows for {dataset_name}")
                 else:

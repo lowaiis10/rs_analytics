@@ -46,7 +46,7 @@ import pandas as pd
 
 TABLE_KEYS: Dict[str, List[str]] = {
     # Google Ads tables
-    'gads_daily_summary': ['date'],
+    'gads_daily_summary': ['date', 'campaign_id'],
     'gads_campaigns': ['date', 'campaign_id'],
     'gads_ad_groups': ['date', 'campaign_id', 'ad_group_id'],
     'gads_keywords': ['date', 'campaign_id', 'ad_group_id', 'keyword_id'],

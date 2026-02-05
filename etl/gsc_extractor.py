@@ -24,6 +24,19 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
+def _get_extracted_at() -> str:
+    """Get current timestamp for extracted_at field."""
+    return datetime.now().isoformat()
+
+
+def _add_extracted_at(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Add extracted_at timestamp to all records."""
+    timestamp = _get_extracted_at()
+    for record in records:
+        record['extracted_at'] = timestamp
+    return records
+
+
 class GSCExtractor:
     """
     Google Search Console data extractor with comprehensive metric support.
@@ -247,6 +260,11 @@ class GSCExtractor:
                 break
         
         self.logger.info(f"  Total: {len(all_rows)} rows for {dataset_name}")
+        
+        # Add extracted_at timestamp to all records
+        if all_rows:
+            all_rows = _add_extracted_at(all_rows)
+        
         return all_rows
     
     def extract_all_data(
